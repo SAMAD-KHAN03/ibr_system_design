@@ -1,2 +1,5 @@
 ./new_env
 ./__pycache__
+./core/__pycache__
+./domain/__pycache__
+./scoring/__pycache__
