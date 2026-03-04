@@ -1,4 +1,3 @@
-from weight_scoring_template import WeightedScoringTemplate
 # scoring/approval_rule.py
 from scoring.base_rule import ScoreRule
 from domain.enums import ApprovalCategory
@@ -20,7 +19,7 @@ class ApprovalStatusRule(ScoreRule):
 
     def evaluate(self, context):
 
-        result = context.results.get("RegulatoryApprovalComponent")
+        result = context.component_results.get("RegulatoryApprovalComponent")
         if not result:
             return 0
 

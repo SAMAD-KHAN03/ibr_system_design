@@ -1,8 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from execution_strategy import ExecutionStrategy
+from execution_context import ExecutionContext
 class ParallelExecutionStrategy(ExecutionStrategy):
 
-    def execute(self, components):
+    def execute(self, components,context: ExecutionContext):
         print("\n--- Parallel Strategy ---")
 
         with ThreadPoolExecutor() as executor:

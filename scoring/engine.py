@@ -1,34 +1,39 @@
 # scoring/approval_rule.py
 from scoring.base_rule import ScoreRule
 from domain.enums import ApprovalCategory
+# engine/bra_engine.py
+# scoring/engine.py
+from execution_context import ExecutionContext
+class ScoringEngine:
 
-class ApprovalStatusRule(ScoreRule):
+    def __init__(self, rules: list, override_rules: list):
+        self.rules = rules
+        self.override_rules = override_rules
 
-    def __init__(self):
-        super().__init__("Approval Status")
+    def evaluate(self, context: ExecutionContext):
+        
+        breakdown = {}
+        total_score = 0
 
-        self.score_map = {
-            ApprovalCategory.APPROVED: 2,
-            ApprovalCategory.OFF_LABEL: 1
+        # 1️⃣ Overrides
+        for rule in self.override_rules:
+            score = rule.evaluate(context)   # ✅ FIXED
+            if score > 0:
+                breakdown[rule.name] = score
+                return {
+                    "total_score": score,
+                    "breakdown": breakdown,
+                    "override_triggered": True
+                }
+
+        # 2️⃣ Normal rules
+        for rule in self.rules:
+            score = rule.evaluate(context)   # ✅ FIXED
+            breakdown[rule.name] = score
+            total_score += score
+
+        return {
+            "total_score": total_score,
+            "breakdown": breakdown,
+            "override_triggered": False
         }
-
-        self.weight_map = {
-            ApprovalCategory.APPROVED: 70,
-            ApprovalCategory.OFF_LABEL: 50
-        }
-
-    def evaluate(self, context):
-
-        result = context.results.get("RegulatoryApprovalComponent")
-        if not result:
-            return 0
-
-        category = result.category
-
-        base = self.score_map.get(category, 0)
-        weight = self.weight_map.get(category, 0)
-
-        return base * weight
-
-    def max_score(self):
-        return 2 * 70
