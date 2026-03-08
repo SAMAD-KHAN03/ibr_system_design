@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 from typing import List, Dict, Optional
-from infrastructure.alternatives_infrastructure.rxnorm_client import RxNormClient
+from infrastructure.alternatives_infrastructure import RxNormClient
 
 
 class FDAAlternativesFinder:
@@ -40,24 +40,22 @@ class FDAAlternativesFinder:
     def extract_active_moieties(
         self, results: List[Dict], exclude_medicine: str = None
     ) -> pd.DataFrame:
-        medications  = []
+        medications   = []
         exclude_lower = exclude_medicine.lower() if exclude_medicine else None
 
         for result in results:
-            openfda       = result.get("openfda", {})
-            brand_name    = (openfda.get("brand_name",    ["Unknown"])[0] if openfda.get("brand_name")    else "Unknown")
-            generic_name  = (openfda.get("generic_name",  ["Unknown"])[0] if openfda.get("generic_name")  else "Unknown")
+            openfda         = result.get("openfda", {})
+            brand_name      = (openfda.get("brand_name",    ["Unknown"])[0] if openfda.get("brand_name")    else "Unknown")
+            generic_name    = (openfda.get("generic_name",  ["Unknown"])[0] if openfda.get("generic_name")  else "Unknown")
             substance_names = openfda.get("substance_name", [])
-            manufacturer  = (openfda.get("manufacturer_name", ["Unknown"])[0] if openfda.get("manufacturer_name") else "Unknown")
-            product_type  = (openfda.get("product_type",  ["Unknown"])[0] if openfda.get("product_type")  else "Unknown")
-            route         = openfda.get("route", ["Unknown"])
-            route_str     = ", ".join(route) if route else "Unknown"
+            manufacturer    = (openfda.get("manufacturer_name", ["Unknown"])[0] if openfda.get("manufacturer_name") else "Unknown")
+            product_type    = (openfda.get("product_type",  ["Unknown"])[0] if openfda.get("product_type")  else "Unknown")
+            route           = openfda.get("route", ["Unknown"])
+            route_str       = ", ".join(route) if route else "Unknown"
 
-            # Drug class: try FDA first, fall back to RxNorm
-            pharm_class   = openfda.get("pharm_class_epc", []) or openfda.get("pharm_class_moa", [])
-            drug_class    = pharm_class[0] if pharm_class else None
-            if not drug_class or drug_class.lower() in ("unknown", ""):
-                drug_class = self._rxnorm.get_drug_class(generic_name) or "Unknown"
+            # Store raw FDA pharm class — RxNorm fallback applied only on top_n later
+            pharm_class = openfda.get("pharm_class_epc", []) or openfda.get("pharm_class_moa", [])
+            drug_class  = pharm_class[0] if pharm_class else None
 
             if substance_names:
                 for substance in substance_names:
@@ -96,6 +94,16 @@ class FDAAlternativesFinder:
         print(f"  [Alternatives] Unique active moieties: {len(df_unique)}")
         return df_unique
 
+    def _enrich_drug_class(self, row: dict) -> str:
+        """
+        Called only on the final top_n rows.
+        Returns FDA class if present, else calls RxNorm (max top_n HTTP calls).
+        """
+        drug_class = row.get("Drug_Class")
+        if drug_class and isinstance(drug_class, str) and drug_class.lower() not in ("unknown", "none", ""):
+            return drug_class
+        return self._rxnorm.get_drug_class(row.get("Generic_Name", "")) or "Unknown"
+
     def get_top_alternatives(
         self, medicine: str, condition: str, top_n: int = 3
     ) -> List[Dict]:
@@ -111,8 +119,12 @@ class FDAAlternativesFinder:
             df_medications["Product_Type"].str.contains("PRESCRIPTION", case=False, na=False)
         ]
 
-        top_alternatives  = df_rx.head(top_n)
-        alternatives_list = top_alternatives.to_dict("records")
+        top_df = df_rx.head(top_n).copy()
 
-        print(f"  [Alternatives] Top {len(alternatives_list)} alternatives found")
+        # RxNorm fallback — only on top_n rows (at most 3 HTTP calls)
+        print(f"  [Alternatives] Enriching drug class for top {len(top_df)} alternatives...")
+        top_df["Drug_Class"] = [self._enrich_drug_class(row) for row in top_df.to_dict("records")]
+
+        alternatives_list = top_df.to_dict("records")
+        print(f"  [Alternatives] Top {len(alternatives_list)} alternatives ready")
         return alternatives_list

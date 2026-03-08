@@ -5,8 +5,6 @@ from execution_context import ExecutionContext
 from core.results.execution_result import ExecutionResult
 from domain.results.alternatives_result import AlternativesResult, AlternativeEntry
 from infrastructure.alternatives_infrastructure.fda_alternatives_finder import FDAAlternativesFinder
-
-
 class AlternativesComponent(Component):
     """
     1. Finds top-N alternative drugs via FDA API (+ RxNorm fallback for drug class).
@@ -18,9 +16,7 @@ class AlternativesComponent(Component):
     construction time from main.py — AlternativesComponent never imports
     BRAAnalysisEngine directly, keeping the dependency graph acyclic.
     """
-
     NAME = "Alternatives"
-
     def __init__(
         self,
         scoring_engine,           # BRAAnalysisEngine instance injected from main.py
