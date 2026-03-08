@@ -1,10 +1,12 @@
+from typing import List, Tuple
+
 from core.components_module import Component
 from execution_context import ExecutionContext
 from core.results.execution_result import ExecutionResult
-from domain.results.pubmed_result import PubMedResult
+from domain.enums import PubMedEvidenceCategory
+from domain.results.pubmed_result import PubMedResult, DrugPubMedEntry
 from infrastructure.pubmed_infrastructure.pubmed_searcher import PubMedSearcher
 
-from typing import List, Tuple
 
 class PubMedComponent(Component):
 
@@ -18,24 +20,36 @@ class PubMedComponent(Component):
         return self.NAME
 
     def execute(self, context: ExecutionContext) -> ExecutionResult:
-        
-        # print(f'drug received at pubmed{drug}')
-        # print(f'the patient context is {context.patient_data}')
-        # if not drug or not condition:
-        #     context.add_warning("PubMed: drug name or condition missing — skipped.")
-        #     return ExecutionResult.fail("Missing drug or condition")
-
         pairs = self._collect_drug_condition_pairs(context)
-        # print(f'pairs are {pairs}')
+
         if not pairs:
             context.add_warning("PubMed: no drug/condition pairs found — skipped.")
             return ExecutionResult.fail("No drug or condition data available")
+
+        entries: List[DrugPubMedEntry] = []
+
         for drug, condition, source in pairs:
-            rct_count, conclusions = self._searcher.search(drug, condition)
-            result = PubMedResult.build(drug, condition, rct_count, conclusions)
-            context.add_result(result)
-            print(f"  ✓ PubMed: {rct_count} RCTs found for '{drug}' in '{condition}'.")
+            rct_count, _ = self._searcher.search(drug, condition)
+
+            if rct_count > 3:
+                category = PubMedEvidenceCategory.HIGH
+            else:
+                category = PubMedEvidenceCategory.LOW
+
+            entry = DrugPubMedEntry(
+                drug=drug,
+                condition=condition,
+                source=source,
+                rct_count=rct_count,
+                category=category,
+            )
+            entries.append(entry)
+            print(f"  ✓ [PubMed/{source}] {entry.output}")
+
+        result = PubMedResult.build(entries)
+        context.add_result(result)
         return ExecutionResult.ok(data=result.metadata)
+
     def _collect_drug_condition_pairs(
         self, context: ExecutionContext
     ) -> List[Tuple[str, str, str]]:

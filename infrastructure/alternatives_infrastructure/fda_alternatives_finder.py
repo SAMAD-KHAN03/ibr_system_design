@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 from typing import List, Dict, Optional
-from infrastructure.alternatives_infrastructure import RxNormClient
+from infrastructure.alternatives_infrastructure.rxnorm_client import RxNormClient
 
 
 class FDAAlternativesFinder:

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
-from core.results.component_results import ComponentResult
+from core.components_module import ComponentResult
 from domain.enums import AlternativeScoreCategory
 
 COMPONENT_NAME = "Alternatives"

@@ -3,8 +3,11 @@ from typing import List
 from core.components_module import Component
 from execution_context import ExecutionContext
 from core.results.execution_result import ExecutionResult
+from domain.enums import AlternativeScoreCategory
 from domain.results.alternatives_result import AlternativesResult, AlternativeEntry
 from infrastructure.alternatives_infrastructure.fda_alternatives_finder import FDAAlternativesFinder
+
+
 class AlternativesComponent(Component):
     """
     1. Finds top-N alternative drugs via FDA API (+ RxNorm fallback for drug class).
@@ -16,7 +19,9 @@ class AlternativesComponent(Component):
     construction time from main.py — AlternativesComponent never imports
     BRAAnalysisEngine directly, keeping the dependency graph acyclic.
     """
+
     NAME = "Alternatives"
+
     def __init__(
         self,
         scoring_engine,           # BRAAnalysisEngine instance injected from main.py
@@ -57,6 +62,21 @@ class AlternativesComponent(Component):
             print(f"  ✓ [Alternatives] {entry.name} scored: {entry.total_score:.1f}")
 
         result = AlternativesResult.build(entries)
+
+        # Determine category per sheet B5 logic:
+        # - No alternatives found           → NONE_EXISTS  (score=2×70=140)
+        # - Alternatives found, none better → SAME_SAFETY  (score=1×50=50)
+        # - A safer alternative exists      → SAFER_EXISTS (score=0×20=0)
+        primary_score = context.final_score["ibr_score"] if context.final_score else 0
+        scored = [e for e in entries if e.score is not None]
+
+        if not scored:
+            result.category = AlternativeScoreCategory.NONE_EXISTS
+        elif any(e.total_score > primary_score for e in scored):
+            result.category = AlternativeScoreCategory.SAFER_EXISTS
+        else:
+            result.category = AlternativeScoreCategory.SAME_SAFETY
+
         context.add_result(result)
         return ExecutionResult.ok(data=result.metadata)
 
