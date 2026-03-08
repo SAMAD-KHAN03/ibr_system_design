@@ -4,3 +4,4 @@
 ./domain/__pycache__
 ./scoring/__pycache__
 *.pyc
+.env
