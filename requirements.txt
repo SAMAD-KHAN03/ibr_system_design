@@ -1,1 +1,14 @@
 requests
+google-genai>=1.60.0
+boto3>=1.34.0
+botocore>=1.34.0
+
+# Web Framework
+flask>=3.0.0
+
+# HTTP Requests
+requests>=2.31.0
+
+# Environment Management
+python-dotenv>=1.0.0
+pandas
