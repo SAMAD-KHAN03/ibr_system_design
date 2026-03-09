@@ -73,6 +73,10 @@ async def lifespan(app: FastAPI):
     
     log.info('"BRA server stopped"')
 
+app = FastAPI(
+    title="BRA API",
+    lifespan=lifespan
+)
 class Allergy(BaseModel):
     allergyName: str
     severity:    Optional[str] = None
