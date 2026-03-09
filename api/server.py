@@ -13,13 +13,22 @@ POST /assess
 GET /assess/{job_id}
     Returns current job status and result (once done).
 
+GET /assess/{job_id}/summary
+    Returns only the top-level summary (faster to parse for the frontend).
+
+GET /reports
+    Returns the most recent saved reports from Postgres (default: last 50).
+
+GET /reports/{job_id}
+    Fetches a single report directly from Postgres.
+
 GET /health
     Liveness check.
 
 Start
 ─────
     cd bra_system
-    uvicorn api.server:app --reload --port 8000
+    DATABASE_URL=postgresql://user:pass@localhost:5432/bra uvicorn api.server:app --reload --port 8000
 """
 
 import sys
@@ -28,18 +37,18 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-# Ensure bra_system root is importable regardless of working directory
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
 from api.worker import BRAWorker, enqueue_job, get_job_status
 from api.request_adapter import adapt_request
+from api.db import init_db, fetch_report, fetch_recent_reports
 
 
 # ── Pydantic request models ───────────────────────────────────────────────────
@@ -108,10 +117,9 @@ _worker = BRAWorker(num_threads=2)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start background worker on server startup
+    init_db()          # create table if it doesn't exist (no-op if DB is down)
     _worker.start()
     yield
-    # Stop worker on shutdown
     _worker.stop()
 
 
@@ -141,17 +149,13 @@ def health():
 def submit_assessment(body: AssessRequest):
     """
     Enqueues a BRA assessment job.
-
     Returns immediately with a job_id.
     Poll GET /assess/{job_id} to retrieve the result.
     """
     if not body.newMedications:
         raise HTTPException(status_code=400, detail="newMedications list is empty — nothing to assess.")
 
-    # Convert Pydantic models → plain dicts for adapter
     raw_body = body.model_dump()
-
-    # adapt_request normalises age, pregnancy, indication, etc.
     patient_data, new_medications = adapt_request(raw_body)
 
     if not new_medications:
@@ -180,42 +184,7 @@ def submit_assessment(body: AssessRequest):
 
 @app.get("/assess/{job_id}")
 def get_assessment(job_id: str):
-    """
-    Poll for assessment result.
-
-    Response shape
-    ──────────────
-    {
-        "job_id":      "...",
-        "status":      "queued" | "processing" | "done" | "failed",
-        "queued_at":   "...",
-        "started_at":  "...",
-        "finished_at": "...",
-        "result": {                          ← only present when status == "done"
-            "patient_id":   "...",
-            "patient_name": "...",
-            "per_medication": {
-                "Furosemide 40 MG Oral Tablet": {
-                    "drug":      "...",
-                    "condition": "...",
-                    "ibr_report": {
-                        "per_medicine": { ... },
-                        "summary":      { favorable, conditional, unfavourable, overridden }
-                    }
-                },
-                ...
-            },
-            "summary": {
-                "favorable":   [...],
-                "conditional": [...],
-                "unfavourable":[...],
-                "overridden":  [...],
-                "errored":     [...]
-            }
-        },
-        "error": "..."                       ← only present when status == "failed"
-    }
-    """
+    """Poll for assessment result (reads from in-memory store)."""
     status_entry = get_job_status(job_id)
 
     if status_entry.get("status") == "not_found":
@@ -226,10 +195,7 @@ def get_assessment(job_id: str):
 
 @app.get("/assess/{job_id}/summary")
 def get_assessment_summary(job_id: str):
-    """
-    Returns only the top-level summary (faster to parse for the frontend).
-    Only meaningful when status == 'done'.
-    """
+    """Returns only the top-level summary. Only meaningful when status == 'done'."""
     status_entry = get_job_status(job_id)
 
     if status_entry.get("status") == "not_found":
@@ -249,3 +215,30 @@ def get_assessment_summary(job_id: str):
         "summary":      summary,
         "finished_at":  status_entry.get("finished_at"),
     }
+
+
+# ── Postgres report endpoints ─────────────────────────────────────────────────
+
+@app.get("/reports")
+def list_reports(limit: int = Query(default=50, ge=1, le=500)):
+    """
+    Returns the most recent saved reports from Postgres.
+
+    Query params:
+        limit  — number of records to return (default 50, max 500)
+    """
+    rows = fetch_recent_reports(limit=limit)
+    return {"count": len(rows), "reports": rows}
+
+
+@app.get("/reports/{job_id}")
+def get_report(job_id: str):
+    """
+    Fetches a single report directly from Postgres.
+    Useful for retrieving results after the server has restarted
+    (in-memory store is gone, but Postgres persists).
+    """
+    row = fetch_report(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No saved report found for job '{job_id}'.")
+    return row
