@@ -8,13 +8,12 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session
 
 log = logging.getLogger(__name__)
 
-# Convert asyncpg URL to psycopg2 URL
+# Convert URL for psycopg2
 DATABASE_URL: str = os.environ.get(
     "DATABASE_URL",
     "postgresql://bra_user:bra_password@localhost:5432/bra_db",
 ).replace("postgresql+asyncpg://", "postgresql://")
 
-# Standard Sync Engine
 engine = create_engine(
     DATABASE_URL,
     pool_size=15,

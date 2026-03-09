@@ -39,10 +39,39 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.worker import BRAWorker, enqueue_job, get_job_status
 from api.request_adapter import adapt_request
-from db.database import init_db, close_db, get_db_session
+from db.database import init_db, get_db_session
 import db.repository as repository
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
+# ── App lifecycle ─────────────────────────────────────────────────────────────
+
+_worker = BRAWorker()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 1. STARTUP PHASE
+    log.info('"BRA server starting"')
+    
+    # Initialize DB (Sync call inside async wrapper is fine here)
+    init_db() 
+    
+    # Start the background worker threads
+    _worker.start()
+    
+    log.info('"BRA server ready"')
+    
+    yield  # <--- The server runs while it's "yielding" here
+    
+    # 2. SHUTDOWN PHASE
+    log.info('"BRA server shutting down"')
+    
+    # Gracefully stop worker (drains the queue)
+    _worker.stop()
+    
+    # Note: We do NOT call close_db() here because sync engines 
+    # handle their own cleanup on process exit.
+    
+    log.info('"BRA server stopped"')
 
 class Allergy(BaseModel):
     allergyName: str
