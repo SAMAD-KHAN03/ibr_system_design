@@ -8,7 +8,7 @@ from domain.results.contraindication_result import (
     ContraindicationResult,
     DrugContraindicationEntry,
 )
-from infrastructure.contraindication_infrastructure.fda_label_fetcher import FDALabelFetcher
+from infrastructure.approvalstatus_infrastructure.usfda_checker import FDALabelFetcher
 from infrastructure.contraindication_infrastructure.concept_extractor import extract_concepts, extract_contraindication_concepts
 from infrastructure.contraindication_infrastructure.gemini_explainer import GeminiExplainer
 
@@ -116,10 +116,16 @@ class ContraindicationComponent(Component):
         pairs: List[Tuple[str, str, str]] = []
 
         def add(drug: str, condition: str, source: str) -> None:
-            drug, condition = drug.strip(), condition.strip()
-            if drug and (drug.lower(), condition.lower()) not in seen:
-                seen.add((drug.lower(), condition.lower()))
-                pairs.append((drug, condition, source))
+            drug      = drug.strip()
+            condition = condition.strip()
+            if source == "primary":
+                if drug and (drug.lower(), condition.lower()) not in seen:
+                    seen.add((drug.lower(), condition.lower()))
+                    pairs.append((drug, condition, source))
+            else:
+                if drug and condition and (drug.lower(), condition.lower()) not in seen:
+                    seen.add((drug.lower(), condition.lower()))
+                    pairs.append((drug, condition, source))
 
         # 1️⃣  Primary drug
         add(context.drug_name, context.condition, "primary")
