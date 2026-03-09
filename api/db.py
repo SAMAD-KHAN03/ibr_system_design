@@ -26,7 +26,9 @@ import os
 import json
 import logging
 from typing import Any, Dict, Optional
-
+# add these two lines at the very top of api/server.py, before any other imports
+from dotenv import load_dotenv
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ── Connection ────────────────────────────────────────────────────────────────
