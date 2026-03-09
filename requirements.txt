@@ -12,3 +12,6 @@ requests>=2.31.0
 # Environment Management
 python-dotenv>=1.0.0
 pandas
+pydantic
+fastapi
+uvicorn[standard]

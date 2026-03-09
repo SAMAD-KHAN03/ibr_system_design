@@ -1,7 +1,7 @@
 from domain.enums import ADRSeverityCategory
 from scoring.weighted_score_rule import WeightedScoreRule
 
-COMPONENT_NAME = "ADRSeverity"
+COMPONENT_NAME = "ADRAnalysis"
 
 class ADRSeverityRule(WeightedScoreRule):
     """R3 — Risk Severity (ADRs)."""

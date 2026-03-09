@@ -1,16 +1,16 @@
 from typing import Set, List, Tuple, Optional
 
-from core.components_module import Component
-from execution_context import ExecutionContext
+from core.components.component import Component
+from core.execution_context import ExecutionContext
 from core.results.execution_result import ExecutionResult
 from domain.enums import ContraindicationCategory
 from domain.results.contraindication_result import (
     ContraindicationResult,
     DrugContraindicationEntry,
 )
-from infrastructure.contraindication_infrastructure.fda_label_fetcher import FDALabelFetcher
-from infrastructure.contraindication_infrastructure.concept_extractor import extract_concepts, extract_contraindication_concepts
-from infrastructure.contraindication_infrastructure.gemini_explainer import GeminiExplainer
+from infrastructure.fda_label_fetcher import FDALabelFetcher
+from infrastructure.concept_extractor import extract_concepts, extract_contraindication_concepts
+from infrastructure.gemini_explainer import GeminiExplainer
 
 
 class ContraindicationComponent(Component):
@@ -76,15 +76,30 @@ class ContraindicationComponent(Component):
         result = ContraindicationResult.build(entries)
         context.add_result(result)
 
-        flagged = [e for e in entries if e.is_contraindicated]
-        if flagged:
-            names = ", ".join(e.drug for e in flagged)
-            print(f"\n  ⚠  Contraindication: {len(flagged)} drug(s) flagged ({names}) — halting pipeline.")
+        # ── Background drug warnings (never halt) ─────────────────────────────
+        # Ongoing meds, current diagnosis meds, past condition treatments are
+        # already prescribed by a doctor. Flag them as warnings for the report
+        # but do NOT halt — halting would prevent scoring the drug under review.
+        background_flagged = [e for e in entries if e.is_contraindicated and e.source != "primary"]
+        for e in background_flagged:
+            msg = (f"Contraindication warning [{e.source}]: '{e.drug}' flagged for "
+                   f"{', '.join(e.risk_concepts)} — report to prescriber.")
+            context.add_warning(msg)
+            print(f"  ⚠  [background] {msg}")
+
+        # ── Primary drug — halt only if THIS drug is contraindicated ──────────
+        primary_flagged = [e for e in entries if e.is_contraindicated and e.source == "primary"]
+        if primary_flagged:
+            names = ", ".join(e.drug for e in primary_flagged)
+            print(f"\n  ⚠  Contraindication: primary drug '{names}' is contraindicated — halting pipeline.")
+            # Store flag on context so AlternativesComponent knows to run
+            context.primary_contraindicated = True
             return ExecutionResult.halt(
-                f"{len(flagged)} contraindicated drug(s) detected: {names}"
+                f"Primary drug contraindicated: {names}"
             )
 
-        print(f"  ✓ Contraindication: all {len(entries)} drug(s) cleared.")
+        context.primary_contraindicated = False
+        print(f"  ✓ Contraindication: primary drug cleared.")
         return ExecutionResult.ok()
 
     # ── Drug collection ──────────────────────────────────────────────────────
@@ -130,7 +145,7 @@ class ContraindicationComponent(Component):
             condition = cond.get("conditionName", "")
             if drug:
                 add(drug, condition, "past_condition")
-            # print(f'the pairs for contraindication check are {pairs}')
+
         return pairs
 
     # ── Single drug check ────────────────────────────────────────────────────
@@ -174,7 +189,6 @@ class ContraindicationComponent(Component):
         risk_concept = next(iter(overlap))
         category     = self._classify(risk_concept, sections)
         fda_context  = "\n\n".join(f"{k.upper()}:\n{v}" for k, v in sections.items() if v)
-        print("calling the explainer")
         explanation  = self._explainer.explain(
             drug, risk_concept, treating_condition, fda_context, patient_context_str
         )

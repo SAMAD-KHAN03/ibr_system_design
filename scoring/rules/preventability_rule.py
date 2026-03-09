@@ -1,7 +1,7 @@
 from domain.enums import PreventabilityCategory
 from scoring.weighted_score_rule import WeightedScoreRule
 
-COMPONENT_NAME = "RiskPreventability"
+COMPONENT_NAME = "RiskMitigation"
 
 class PreventabilityRule(WeightedScoreRule):
     """R4 — Risk Preventability. Non-preventable=3×80=240, Preventable=2×50=100"""

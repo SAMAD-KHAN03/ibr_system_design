@@ -1,5 +1,5 @@
 from domain.enums import DuplicationCategory
-from scoring.rules.weighted_rule import WeightedScoreRule
+from scoring.weighted_score_rule import WeightedScoreRule
 
 COMPONENT_NAME = "TherapeuticDuplication"
 
