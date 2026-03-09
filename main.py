@@ -110,8 +110,8 @@ def build_engine() -> BRAAnalysisEngine:
     # to prevent infinite recursion (alternatives scoring alternatives).
     alternatives_pipeline = (
         BRAAnalysisEngine(scoring_engine=alt_scoring_engine)
-        .add_sequential(ContraindicationComponent())
-        .add_sequential(ApprovalStatusComponent())
+        .add_parallel(ContraindicationComponent())
+        .add_parallel(ApprovalStatusComponent())
         .add_sequential(TherapeuticDuplicationComponent())
         .add_sequential(ADRComponent())
         .add_sequential(RMMComponent())
@@ -122,8 +122,8 @@ def build_engine() -> BRAAnalysisEngine:
 
     engine = (
         BRAAnalysisEngine(scoring_engine=scoring_engine)
-        .add_sequential(ContraindicationComponent())
-        .add_sequential(ApprovalStatusComponent())
+        .add_parallel(ContraindicationComponent())
+        .add_parallel(ApprovalStatusComponent())
         .add_sequential(TherapeuticDuplicationComponent())   # ← Step 3: NICE duplication check
         .add_sequential(ADRComponent())
         .add_sequential(RMMComponent())

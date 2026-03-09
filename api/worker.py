@@ -1,196 +1,200 @@
-from __future__ import annotations
+"""
+api/worker.py
 
-import logging
-import os
+Queue-based background worker.
+
+Flow:
+  1. Server enqueues { job_id, patient_data, new_medications, context } → job_queue
+  2. Worker.run() loops forever, pulling jobs from job_queue
+  3. For each job: calls bra_assessor.assess() once per new_medication
+  4. Stores result in results_store (shared dict, keyed by job_id)
+  5. Server's GET /assess/{job_id} reads from results_store
+
+The queue and results_store are plain Python objects — in-process for now.
+To scale horizontally, swap them for Redis (queue → Redis list/stream,
+results_store → Redis hash). No other file needs to change.
+"""
+
 import queue
 import threading
 import traceback
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict
 
-from db.database import get_db_session
-from db import repository
-
-log = logging.getLogger(__name__)
-
-# --- Shared State ---
+# ── Shared state (in-process) ─────────────────────────────────────────────────
+# In production: replace with redis.Redis() calls
 job_queue: queue.Queue = queue.Queue()
-# job_id → full status dict (Hot cache for recent jobs)
+
+# job_id → { status, result, error, started_at, finished_at }
 results_store: Dict[str, Dict[str, Any]] = {}
 _store_lock = threading.Lock()
 
+
+# ── Status constants ──────────────────────────────────────────────────────────
 STATUS_QUEUED     = "queued"
 STATUS_PROCESSING = "processing"
 STATUS_DONE       = "done"
 STATUS_FAILED     = "failed"
 
-_NUM_THREADS = int(os.environ.get("WORKER_THREADS", "2"))
-
-# --- Public Interface ---
 
 def enqueue_job(job: Dict[str, Any]) -> None:
-    """
-    Update in-memory cache and add to execution queue.
-    Database record is already created by server.py to avoid IntegrityErrors.
-    """
+    """Called by the server to add a job. Updates results_store to 'queued'."""
     job_id = job["job_id"]
-    submitted_at = job.get("submitted_at") or datetime.now(timezone.utc).isoformat()
-
-    status_entry = {
-        "status": STATUS_QUEUED,
-        "job_id": job_id,
-        "result": None,
-        "error": None,
-        "queued_at": submitted_at,
-        "started_at": None,
-        "finished_at": None,
-    }
-
     with _store_lock:
-        results_store[job_id] = status_entry
-
+        results_store[job_id] = {
+            "status":      STATUS_QUEUED,
+            "job_id":      job_id,
+            "result":      None,
+            "error":       None,
+            "queued_at":   datetime.utcnow().isoformat(),
+            "started_at":  None,
+            "finished_at": None,
+        }
     job_queue.put(job)
-    log.info("job_enqueued_in_memory job_id=%s", job_id)
+
 
 def get_job_status(job_id: str) -> Dict[str, Any]:
-    """Retrieves status from cache or falls back to DB on cache miss."""
+    """Called by the server's GET endpoint to check job status."""
     with _store_lock:
-        cached = results_store.get(job_id)
-    if cached:
-        return cached
+        return results_store.get(job_id, {"status": "not_found", "job_id": job_id})
 
-    log.info("cache_miss job_id=%s — querying DB", job_id)
-    try:
-        with get_db_session() as session:
-            job = repository.get_job_with_report(session, job_id)
-            if not job:
-                return {"status": "not_found", "job_id": job_id}
-            
-            entry = {
-                "status": job.status,
-                "job_id": job_id,
-                "result": job.report.report_json if job.report else None,
-                "error": job.error_message,
-                "queued_at": job.queued_at.isoformat() if job.queued_at else None,
-                "started_at": job.started_at.isoformat() if job.started_at else None,
-                "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-            }
-            with _store_lock:
-                results_store[job_id] = entry
-            return entry
-    except Exception:
-        log.exception("db_fetch_status_failed job_id=%s", job_id)
-        return {"status": "not_found", "job_id": job_id}
-
-# --- Internal Processor ---
 
 def _process_job(job: Dict[str, Any]) -> None:
     """
-    Runs assessment logic and updates DB/Cache status to processing -> done/failed.
+    Core processing logic — runs inside the worker thread.
+    Calls bra_assessor.assess() once per new_medication.
     """
+    import sys, os
+    # Ensure bra_system root is on path regardless of where worker is started from
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
     from bra_assessor import assess
-    job_id = job["job_id"]
-    started_at = datetime.now(timezone.utc)
 
-    # 1. Update In-Memory Cache to Processing
+    job_id          = job["job_id"]
+    patient_data    = job["patient_data"]
+    new_medications = job["new_medications"]   # list of {name, condition, dosage}
+    assessment_ctx  = job.get("assessment_context", {})
+
+    # Mark as processing
     with _store_lock:
-        if job_id in results_store:
-            results_store[job_id]["status"] = STATUS_PROCESSING
-            results_store[job_id]["started_at"] = started_at.isoformat()
+        results_store[job_id]["status"]     = STATUS_PROCESSING
+        results_store[job_id]["started_at"] = datetime.utcnow().isoformat()
 
-    # 2. Update DB to Processing
+    per_medication_results = {}
+
+    print(f"\n[Worker] job={job_id} | assessing {len(new_medications)} medication(s)...")
+
     try:
-        with get_db_session() as session:
-            repository.mark_job_processing(session, job_id, started_at)
+        # assess() runs the full engine once per new_medication internally
+        report = assess(patient_data=patient_data, new_medications=new_medications)
 
-        # 3. Run BRA assessment
-        log.info("job_started job_id=%s", job_id)
-        report = assess(patient_data=job["patient_data"], new_medications=job["new_medications"])
-
-        # 4. Build Final Result
-        finished_at = datetime.now(timezone.utc)
-        final_result = {
-            "job_id": job_id,
-            "patient_name": job["patient_data"].get("fullName", ""),
-            "summary": _build_summary(report.get("per_medicine", {})),
-            "per_medication": report.get("per_medicine", {}),
-        }
-
-        # 5. Save Done state to Cache and DB
-        with _store_lock:
-            if job_id in results_store:
-                results_store[job_id].update({
-                    "status": STATUS_DONE,
-                    "result": final_result,
-                    "finished_at": finished_at.isoformat()
-                })
-        
-        with get_db_session() as session:
-            repository.save_report(session, job_id, final_result)
-            repository.mark_job_done(session, job_id, finished_at)
-
-        log.info("job_done job_id=%s", job_id)
+        for drug_name, entry in report.get("per_medicine", {}).items():
+            per_medication_results[drug_name] = entry
 
     except Exception as exc:
-        log.exception("job_failed job_id=%s", job_id)
-        finished_at = datetime.now(timezone.utc)
-        err_msg = traceback.format_exc()
-        
-        with _store_lock:
-            if job_id in results_store:
-                results_store[job_id].update({
-                    "status": STATUS_FAILED,
-                    "error": str(exc),
-                    "finished_at": finished_at.isoformat()
-                })
-        
-        with get_db_session() as session:
-            repository.mark_job_failed(session, job_id, err_msg, finished_at)
+        import traceback
+        print(f"[Worker] Error during assessment: {exc}")
+        traceback.print_exc()
+        for med in new_medications:
+            per_medication_results[med["name"]] = {
+                "drug":  med["name"],
+                "error": str(exc),
+            }
 
-def _build_summary(results: Dict[str, Any]) -> Dict[str, Any]:
-    """Aggregates outcomes for the summary report."""
-    favorable = [k for k, v in results.items() if v.get("ibr_outcome") == "Favorable"]
-    unfavourable = [k for k, v in results.items() if v.get("halted") or v.get("ibr_outcome") == "Unfavourable"]
-    conditional = [k for k, v in results.items() if v.get("ibr_outcome") == "Conditional"]
-    
-    return {
-        "favorable": favorable,
-        "conditional": conditional,
-        "unfavourable": unfavourable,
-        "count": len(results)
+    # Build final result
+    final_result = {
+        "job_id":             job_id,
+        "assessment_context": assessment_ctx,
+        "patient_id":         patient_data.get("id", ""),
+        "patient_name":       patient_data.get("fullName", ""),
+        "per_medication":     per_medication_results,
+        "summary": _build_summary(per_medication_results),
     }
 
-# --- Worker Orchestration ---
+    with _store_lock:
+        results_store[job_id]["status"]      = STATUS_DONE
+        results_store[job_id]["result"]      = final_result
+        results_store[job_id]["finished_at"] = datetime.utcnow().isoformat()
+
+    print(f"[Worker] job={job_id} done.")
+
+
+def _build_summary(per_medication_results: Dict[str, Any]) -> Dict[str, Any]:
+    """Builds a quick-read summary from the flat per_medicine entries."""
+    favorable, conditional, unfavourable, overridden, errored = [], [], [], [], []
+
+    for drug_name, data in per_medication_results.items():
+        if data.get("error"):
+            errored.append(drug_name)
+            continue
+        if data.get("override_triggered"):
+            overridden.append(drug_name)
+        elif data.get("halted"):
+            unfavourable.append(drug_name)
+        elif data.get("ibr_outcome") == "Favorable":
+            favorable.append(drug_name)
+        elif data.get("ibr_outcome") == "Conditional":
+            conditional.append(drug_name)
+        else:
+            unfavourable.append(drug_name)
+
+    return {
+        "favorable":    favorable,
+        "conditional":  conditional,
+        "unfavourable": unfavourable,
+        "overridden":   overridden,
+        "errored":      errored,
+    }
+
 
 class BRAWorker:
-    def __init__(self, num_threads: int = _NUM_THREADS):
+    """
+    Background worker that processes jobs from job_queue.
+    Each job runs in its own thread so the worker loop never blocks.
+    """
+
+    def __init__(self, num_threads: int = 2):
         self._num_threads = num_threads
-        self._running = False
-        self._semaphore = threading.Semaphore(num_threads)
+        self._running     = False
 
     def start(self) -> None:
+        """Starts the worker loop in a daemon thread."""
         self._running = True
-        threading.Thread(target=self._loop, daemon=True, name="bra-worker-loop").start()
-        log.info("worker_started threads=%d", self._num_threads)
+        t = threading.Thread(target=self._loop, daemon=True, name="bra-worker-loop")
+        t.start()
+        print(f"[Worker] Started with {self._num_threads} processing thread(s).")
 
     def stop(self) -> None:
         self._running = False
-        log.info("worker_stopping")
 
     def _loop(self) -> None:
+        """Pulls jobs from queue and dispatches each to a thread pool."""
+        semaphore = threading.Semaphore(self._num_threads)
+
         while self._running:
             try:
                 job = job_queue.get(timeout=1)
-                self._semaphore.acquire()
-                threading.Thread(target=self._run_wrapper, args=(job,), daemon=True).start()
             except queue.Empty:
                 continue
 
-    def _run_wrapper(self, job):
-        try:
-            _process_job(job)
-        except Exception:
-            log.exception("worker_unhandled_error")
-        finally:
-            self._semaphore.release()
-            job_queue.task_done()
+            semaphore.acquire()
+
+            def run(j=job):
+                try:
+                    _process_job(j)
+                except Exception:
+                    job_id = j.get("job_id", "unknown")
+                    print(f"[Worker] Unhandled error in job {job_id}:")
+                    traceback.print_exc()
+                    with _store_lock:
+                        if job_id in results_store:
+                            results_store[job_id]["status"] = STATUS_FAILED
+                            results_store[job_id]["error"]  = traceback.format_exc()
+                            results_store[job_id]["finished_at"] = datetime.utcnow().isoformat()
+                finally:
+                    semaphore.release()
+                    job_queue.task_done()
+
+            threading.Thread(target=run, daemon=True).start()

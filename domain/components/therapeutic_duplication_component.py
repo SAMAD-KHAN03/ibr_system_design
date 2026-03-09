@@ -153,13 +153,13 @@ class TherapeuticDuplicationComponent(Component):
             reason = "; ".join(
                 f"{p.drug_a} + {p.drug_b}" for p in contraindicated_pairs
             )
-            context.trigger_hard_stop()
-            return ExecutionResult.halt(
-                reason=(
-                    f"TherapeuticDuplication: CONTRAINDICATED combination(s) detected — {reason}. "
-                    f"Pipeline halted. Clinical review required before dispensing."
-                )
-            )
+            # context.trigger_hard_stop()
+            # return ExecutionResult.halt(
+            #     reason=(
+            #         f"TherapeuticDuplication: CONTRAINDICATED combination(s) detected — {reason}. "
+            #         f"Pipeline halted. Clinical review required before dispensing."
+            #     )
+            # )
 
         return ExecutionResult.ok(data=result.metadata)
 

@@ -93,14 +93,7 @@ def adapt_request(body: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, 
         for dx in patient_raw.get("currentDiagnosis", [])
         if dx.get("name")
     ]
-    # Fallback chain: currentDiagnosis names → chiefComplaint → "General"
-    # An empty condition causes ApprovalStatus and other components to skip
-    # the primary drug entirely, halting the pipeline.
-    inferred_condition = (
-        ", ".join(diagnosis_names)
-        if diagnosis_names
-        else (chief_complaint.strip() or "General")
-    )
+    inferred_condition = ", ".join(diagnosis_names) if diagnosis_names else chief_complaint
 
     new_medications: List[Dict[str, str]] = []
     for med in body.get("newMedications", []):
