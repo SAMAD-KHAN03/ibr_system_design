@@ -21,8 +21,14 @@ echo "=== BRA API Test Setup ==="
 # ── 1. System packages ────────────────────────────────────────────────────────
 echo "[1/6] Installing system packages..."
 sudo apt-get update -qq
+
+# Add deadsnakes PPA — required for Python 3.11 on Ubuntu 22.04
+sudo apt-get install -y -qq software-properties-common
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt-get update -qq
+
 sudo apt-get install -y -qq \
-    python3.11 python3.11-venv python3.11-dev \
+    python3.11 python3.11-venv python3.11-dev python3.11-distutils \
     build-essential libpq-dev \
     postgresql postgresql-client \
     git curl
