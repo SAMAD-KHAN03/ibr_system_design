@@ -8,7 +8,7 @@ from domain.results.contraindication_result import (
     ContraindicationResult,
     DrugContraindicationEntry,
 )
-from infrastructure.approvalstatus_infrastructure.usfda_checker import FDALabelFetcher
+from infrastructure.contraindication_infrastructure.fda_label_fetcher import FDALabelFetcher
 from infrastructure.contraindication_infrastructure.concept_extractor import extract_concepts, extract_contraindication_concepts
 from infrastructure.contraindication_infrastructure.gemini_explainer import GeminiExplainer
 
