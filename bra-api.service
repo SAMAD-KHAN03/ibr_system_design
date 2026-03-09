@@ -1,0 +1,55 @@
+# /etc/systemd/system/bra-api.service
+#
+# Systemd unit file for the BRA API server on EC2.
+#
+# Setup steps:
+#   1. Copy this file to /etc/systemd/system/bra-api.service
+#   2. Edit WorkingDirectory, ExecStart paths and User to match your EC2 setup
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable bra-api
+#   5. sudo systemctl start bra-api
+#
+# View logs:
+#   sudo journalctl -u bra-api -f
+#
+# Restart:
+#   sudo systemctl restart bra-api
+
+[Unit]
+Description=BRA Benefit-Risk Assessment API
+After=network.target
+# If using RDS, no local postgres dependency needed.
+# If running local postgres: After=network.target postgresql.service
+
+[Service]
+Type=exec
+User=ec2-user
+
+# ── Paths — adjust to your deployment directory ───────────────────────────────
+WorkingDirectory=/home/ec2-user/ibr_backend_system_design
+ExecStart=/home/ec2-user/venv/bin/gunicorn api.server:app \
+    --workers 1 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --bind 0.0.0.0:8000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --access-logfile - \
+    --error-logfile - \
+    --log-level info
+
+# ── Load .env file ────────────────────────────────────────────────────────────
+EnvironmentFile=/home/ec2-user/ibr_backend_system_design/.env
+
+# ── Process management ────────────────────────────────────────────────────────
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# ── Security hardening ────────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
