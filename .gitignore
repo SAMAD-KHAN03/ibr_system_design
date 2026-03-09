@@ -5,3 +5,4 @@
 ./scoring/__pycache__
 *.pyc
 .env
+new_env

@@ -1,99 +1,153 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # =============================================================================
-# setup.sh — BRA API test setup (Ubuntu 22.04)
-# Assumes repo is already cloned at APP_DIR.
+# setup.sh — BRA System bootstrap for EC2 Ubuntu
+#
+# Usage:
+#   chmod +x setup.sh
+#   ./setup.sh
+#
+# What it does:
+#   1. Updates system packages
+#   2. Installs Python 3.11, pip, venv
+#   3. Installs & starts PostgreSQL
+#   4. Creates DB user + database
+#   5. Creates .env with DATABASE_URL
+#   6. Creates Python virtualenv & installs requirements
+#   7. Creates a systemd service so the app starts on reboot
+#
+# Edit the variables in the CONFIG section before running.
 # =============================================================================
 
 set -euo pipefail
 
-APP_DIR="/home/ubuntu/ibr_system_design"
-VENV_DIR="/home/ubuntu/ibr_system_design/venv"
-DB_NAME="bra_db"
+# ── CONFIG — edit these before running ───────────────────────────────────────
+APP_DIR="/home/ubuntu/ibr_system_design"          # path to your cloned repo
+VENV_DIR="$APP_DIR/.venv"
+
+DB_NAME="bra"
 DB_USER="bra_user"
-DB_PASSWORD="bra_test_password"
+DB_PASS="changeme_strong_password"         # ← change this
 
-echo "=== BRA API Test Setup ==="
+APP_PORT="8000"
+APP_MODULE="api.server:app"                # uvicorn entry point
+APP_WORKERS="2"
 
-# ── 1. System packages ────────────────────────────────────────────────────────
-echo "[1/5] Installing system packages..."
-sudo apt-get update -qq
+SERVICE_NAME="bra"
+SERVICE_USER="ubuntu"
+# ─────────────────────────────────────────────────────────────────────────────
 
-# deadsnakes PPA — required for Python 3.11 on Ubuntu 22.04
-sudo apt-get install -y -qq software-properties-common
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt-get update -qq
+YELLOW="\033[1;33m"
+GREEN="\033[1;32m"
+RED="\033[1;31m"
+NC="\033[0m"
 
-sudo apt-get install -y -qq \
-    python3.11 python3.11-venv python3.11-dev python3.11-distutils \
-    build-essential libpq-dev \
-    postgresql postgresql-client \
-    curl
+info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-# ── 2. PostgreSQL ─────────────────────────────────────────────────────────────
-echo "[2/5] Setting up PostgreSQL..."
-sudo systemctl start postgresql
+# ── 1. System update ──────────────────────────────────────────────────────────
+info "Updating system packages..."
+sudo apt-get update -y
+sudo apt-get upgrade -y
+
+# ── 2. Python 3.11 ───────────────────────────────────────────────────────────
+info "Installing Python 3.11..."
+sudo apt-get install -y python3.11 python3.11-venv python3.11-dev python3-pip
+
+# Make python3 → python3.11
+sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+python3 --version
+
+# ── 3. PostgreSQL ─────────────────────────────────────────────────────────────
+info "Installing PostgreSQL..."
+sudo apt-get install -y postgresql postgresql-contrib libpq-dev
+
+info "Starting PostgreSQL service..."
 sudo systemctl enable postgresql
+sudo systemctl start postgresql
 
-# Create user (skip if exists)
-sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" \
-    | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"
+# ── 4. Create DB user + database ─────────────────────────────────────────────
+info "Setting up PostgreSQL database..."
+sudo -u postgres psql <<EOF
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$DB_USER') THEN
+    CREATE ROLE $DB_USER WITH LOGIN PASSWORD '$DB_PASS';
+  END IF;
+END
+\$\$;
 
-# Create database (skip if exists)
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" \
-    | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
-
-# Allow password auth for bra_user
-PG_HBA=$(sudo find /etc/postgresql -name pg_hba.conf | head -1)
-if ! sudo grep -q "$DB_USER" "$PG_HBA"; then
-    sudo sed -i "/^local   all             all/i local   ${DB_NAME}    ${DB_USER}    md5" "$PG_HBA"
-    sudo systemctl reload postgresql
-fi
-
-# ── 3. Python venv + dependencies ─────────────────────────────────────────────
-echo "[3/5] Setting up Python environment..."
-python3.11 -m venv "$VENV_DIR"
-"${VENV_DIR}/bin/pip" install --upgrade pip -q
-"${VENV_DIR}/bin/pip" install -r "${APP_DIR}/requirements.txt" -q
-
-# ── 4. Write .env ─────────────────────────────────────────────────────────────
-echo "[4/5] Writing .env..."
-cat > "${APP_DIR}/.env" <<EOF
-DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@localhost:5432/${DB_NAME}
-APP_ORIGINS=*
-WORKER_THREADS=2
+SELECT 'CREATE DATABASE $DB_NAME OWNER $DB_USER'
+  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$DB_NAME')
+\gexec
 EOF
 
-# ── 5. Create DB tables ───────────────────────────────────────────────────────
-echo "[5/5] Creating database tables..."
-cd "$APP_DIR"
-"${VENV_DIR}/bin/python" - <<'PYEOF'
-import os, sys, asyncio
-for line in open(".env").read().splitlines():
-    if line and not line.startswith("#") and "=" in line:
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip())
-sys.path.insert(0, os.getcwd())
-from db.database import init_db
-asyncio.run(init_db())
-print("  Tables created.")
-PYEOF
+info "Database '$DB_NAME' and user '$DB_USER' ready."
+
+# ── 5. Write .env ─────────────────────────────────────────────────────────────
+info "Writing .env file to $APP_DIR/.env ..."
+
+# Create app dir if it doesn't exist yet (e.g. before git clone)
+mkdir -p "$APP_DIR"
+
+cat > "$APP_DIR/.env" <<EOF
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
+EOF
+
+info ".env written."
+
+# ── 6. Python virtualenv + dependencies ──────────────────────────────────────
+info "Creating virtualenv at $VENV_DIR ..."
+python3 -m venv "$VENV_DIR"
+
+info "Installing Python dependencies..."
+"$VENV_DIR/bin/pip" install --upgrade pip
+"$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
+
+info "Dependencies installed."
+
+# ── 7. Systemd service ────────────────────────────────────────────────────────
+info "Creating systemd service: $SERVICE_NAME ..."
+
+sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null <<EOF
+[Unit]
+Description=BRA Benefit Risk Assessment API
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$APP_DIR/.env
+ExecStart=$VENV_DIR/bin/uvicorn $APP_MODULE \\
+    --host 0.0.0.0 \\
+    --port $APP_PORT \\
+    --workers $APP_WORKERS
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl restart "$SERVICE_NAME"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
-echo "=== Setup complete ==="
+info "================================================================"
+info " BRA system is up!"
+info " Service : sudo systemctl status $SERVICE_NAME"
+info " Logs    : sudo journalctl -u $SERVICE_NAME -f"
+info " API     : http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo '<EC2-PUBLIC-IP>'):$APP_PORT"
+info " Health  : http://localhost:$APP_PORT/health"
+info "================================================================"
 echo ""
-echo "Start the server:"
-echo "  cd ${APP_DIR}"
-echo "  source ${VENV_DIR}/bin/activate"
-echo "  uvicorn api.server:app --host 0.0.0.0 --port 8000"
-echo ""
-echo "Test it:"
-echo "  curl http://localhost:8000/health/live"
-echo "  curl http://localhost:8000/health/ready"
-echo ""
-echo "DB credentials:"
-echo "  Name     : ${DB_NAME}"
-echo "  User     : ${DB_USER}"
-echo "  Password : ${DB_PASSWORD}"
+warn "Remember to:"
+warn "  1. Open port $APP_PORT in your EC2 Security Group"
+warn "  2. Change DB_PASS in this script before running in production"
+warn "  3. Set up Nginx + SSL if exposing to the internet"
