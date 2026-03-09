@@ -1,10 +1,10 @@
-from typing import List, Tuple
 from core.components_module import Component
 from execution_context import ExecutionContext
 from core.results.execution_result import ExecutionResult
-from domain.enums import ApprovalCategory
-from domain.results.approval_status_result import ApprovalStatusResult, DrugApprovalEntry
+from domain.results.approval_status_result import ApprovalStatusResult,DrugApprovalEntry
 from infrastructure.approvalstatus_infrastructure.usfda_checker import USFDAChecker
+from domain.enums import ApprovalCategory
+from typing import List, Tuple
 
 
 class ApprovalStatusComponent(Component):
@@ -77,45 +77,32 @@ class ApprovalStatusComponent(Component):
         pairs: List[Tuple[str, str, str]] = []
 
         def add(drug: str, condition: str, source: str) -> None:
-            drug      = drug.strip()
-            condition = condition.strip()
-            # Primary drug is always added even if condition is empty —
-            # background drugs (ongoing, past) are skipped if either is missing.
-            if source == "primary":
-                if drug and (drug.lower(), condition.lower()) not in seen:
-                    seen.add((drug.lower(), condition.lower()))
-                    pairs.append((drug, condition, source))
-            else:
-                if drug and condition and (drug.lower(), condition.lower()) not in seen:
-                    seen.add((drug.lower(), condition.lower()))
-                    pairs.append((drug, condition, source))
+            drug, condition = drug.strip(), condition.strip()
+            if drug and condition and (drug.lower(), condition.lower()) not in seen:
+                seen.add((drug.lower(), condition.lower()))
+                pairs.append((drug, condition, source))
 
         # 1️⃣  Primary drug being evaluated
         add(context.drug_name, context.condition, "primary")
-
         patient = context.patient_data
-
         # 2️⃣  Ongoing medications — use their indication if present,
         #     otherwise fall back to the primary condition
         for med in patient.get("ongoingMedications", []):
             drug      = med.get("name", "")
             condition = med.get("indication") or context.condition
             add(drug, condition, "ongoing_medication")
-
         # 3️⃣  Current diagnoses — medication prescribed for the diagnosis
         for dx in patient.get("currentDiagnosis", []):
             drug      = dx.get("medicationName", "")
             condition = dx.get("name", "")        # diagnosis name IS the condition
             if drug:
                 add(drug, condition, "current_diagnosis")
-
         # 4️⃣  Past medical conditions — treatment given for each condition
         for cond in patient.get("pastMedicalConditions", []):
             drug      = cond.get("treatmentGiven", "")
             condition = cond.get("conditionName", "")
             if drug:
                 add(drug, condition, "past_condition")
-
         return pairs
 
     # ── Single lookup ────────────────────────────────────────────────────────
