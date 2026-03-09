@@ -6,8 +6,8 @@
 
 set -euo pipefail
 
-APP_DIR="/home/ubuntu/ibr_backend_system_design"
-VENV_DIR="/home/ubuntu/venv"
+APP_DIR="/home/ubuntu/ibr_system_design"
+VENV_DIR="/home/ubuntu/ibr_system_design/venv"
 DB_NAME="bra_db"
 DB_USER="bra_user"
 DB_PASSWORD="bra_test_password"

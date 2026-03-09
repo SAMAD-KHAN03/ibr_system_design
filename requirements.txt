@@ -1,34 +1,27 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# requirements.txt — Combined dependencies (Development + EC2 Production)
-# Install: pip install -r requirements.txt
-# ─────────────────────────────────────────────────────────────────────────────
-
 # ── API Framework ────────────────────────────────────────────────────────────
 fastapi==0.115.0
-flask>=3.0.0
-uvicorn[standard]==0.30.6        # ASGI server
-gunicorn==22.0.0                 # production process manager
+uvicorn[standard]==0.30.6
+gunicorn==22.0.0
 
 # ── Rate Limiting ────────────────────────────────────────────────────────────
 slowapi==0.1.9
 
 # ── Database ─────────────────────────────────────────────────────────────────
-sqlalchemy==2.0.35               # ORM
-asyncpg==0.29.0                  # async PostgreSQL driver
-psycopg2-binary==2.9.9           # sync driver (used for Alembic migrations)
+sqlalchemy==2.0.35
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
 
-# ── Database Migrations ──────────────────────────────────────────────────────
+# ── Migrations ───────────────────────────────────────────────────────────────
 alembic==1.13.2
 
 # ── HTTP Clients ─────────────────────────────────────────────────────────────
 requests>=2.31.0
-httpx                # async HTTP client
+httpx
 
 # ── AI / Cloud SDKs ──────────────────────────────────────────────────────────
 google-genai
 boto3>=1.34.0
 botocore>=1.34.0
-stability
 
 # ── Data Processing ──────────────────────────────────────────────────────────
 pandas
