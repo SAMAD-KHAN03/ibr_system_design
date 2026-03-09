@@ -46,7 +46,17 @@ class AlternativesComponent(Component):
             context.add_warning("Alternatives: drug name or condition missing — skipped.")
             return ExecutionResult.fail("Missing drug or condition")
 
-        print(f"\n  [Alternatives] Finding top {self._top_n} alternatives for '{drug}' in '{condition}'")
+        # Only find alternatives when the primary drug is contraindicated.
+        # If the drug cleared contraindication checks there is no need to
+        # search for a replacement — B5 score defaults to NONE_EXISTS (safest).
+        if not getattr(context, "primary_contraindicated", False):
+            print(f"\n  [Alternatives] Primary drug '{drug}' is not contraindicated — skipping alternative search.")
+            result = AlternativesResult.build([])
+            result.category = AlternativeScoreCategory.NONE_EXISTS
+            context.add_result(result)
+            return ExecutionResult.ok()
+
+        print(f"\n  [Alternatives] Primary drug contraindicated — finding top {self._top_n} alternatives for '{drug}' in '{condition}'")
         raw_alternatives = self._finder.get_top_alternatives(drug, condition, self._top_n)
 
         if not raw_alternatives:
@@ -67,12 +77,15 @@ class AlternativesComponent(Component):
         # - No alternatives found           → NONE_EXISTS  (score=2×70=140)
         # - Alternatives found, none better → SAME_SAFETY  (score=1×50=50)
         # - A safer alternative exists      → SAFER_EXISTS (score=0×20=0)
-        primary_score = context.final_score["ibr_score"] if context.final_score else 0
+        #
+        # NOTE: context.final_score is None here (parallel phase, before scoring).
+        # Primary drug is contraindicated so its effective iBR is Unfavourable.
+        # Any alternative with a positive ibr_score is by definition safer.
         scored = [e for e in entries if e.score is not None]
 
         if not scored:
             result.category = AlternativeScoreCategory.NONE_EXISTS
-        elif any(e.total_score > primary_score for e in scored):
+        elif any((e.score.get("ibr_score") or 0) > 0 for e in scored):
             result.category = AlternativeScoreCategory.SAFER_EXISTS
         else:
             result.category = AlternativeScoreCategory.SAME_SAFETY

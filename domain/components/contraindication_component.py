@@ -1,16 +1,16 @@
 from typing import Set, List, Tuple, Optional
 
-from core.components.component import Component
-from core.execution_context import ExecutionContext
+from core.components_module import Component
+from execution_context import ExecutionContext
 from core.results.execution_result import ExecutionResult
 from domain.enums import ContraindicationCategory
 from domain.results.contraindication_result import (
     ContraindicationResult,
     DrugContraindicationEntry,
 )
-from infrastructure.fda_label_fetcher import FDALabelFetcher
-from infrastructure.concept_extractor import extract_concepts, extract_contraindication_concepts
-from infrastructure.gemini_explainer import GeminiExplainer
+from infrastructure.contraindication_infrastructure.fda_label_fetcher import FDALabelFetcher
+from infrastructure.contraindication_infrastructure.concept_extractor import extract_concepts, extract_contraindication_concepts
+from infrastructure.contraindication_infrastructure.gemini_explainer import GeminiExplainer
 
 
 class ContraindicationComponent(Component):
