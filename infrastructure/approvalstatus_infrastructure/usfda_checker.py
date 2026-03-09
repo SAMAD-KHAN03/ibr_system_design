@@ -15,10 +15,9 @@ class USFDAChecker:
     API_KEY = "9YewXTTqM2xa5qM5cD9s4BE8T9aupHlaNhGWgYOx"
     _INDICATION_FIELDS = ("indications_and_usage", "purpose", "use")
 
-    def __init__(self, timeout: int = 30):  # Increased from 15 to 30
+    def __init__(self, timeout: int = 30): 
         self._session = requests.Session()
         self._timeout = timeout
-        # Add the API key to session headers for all calls
         self._session.headers.update({"X-Api-Key": self.API_KEY})
 
     def check_approval(self, drug: str, condition: str) -> bool:
@@ -27,14 +26,30 @@ class USFDAChecker:
         indications = self._extract_indications(labels)
         return any(self._matches(condition, ind) for ind in indications)
 
+    def _normalize_drug_name(self, drug_name: str) -> str:
+        """
+        Removes dosage (MG, ML, etc.) and forms (Tablet, Oral, etc.) 
+        to ensure the FDA search finds a match.
+        """
+        # Remove strengths: e.g., "50 MG", "10%", "5ml/10ml"
+        name = re.sub(r'\d+(\.\d+)?\s*(mg|ml|g|%|mcg|units)', '', drug_name, flags=re.IGNORECASE)
+        # Remove forms and routes: e.g., "Oral Tablet", "Injection", "Cream"
+        name = re.sub(r'(oral|tablet|capsule|injection|cream|ointment|gel|solution|suspension)', '', name, flags=re.IGNORECASE)
+        # Clean up double spaces and trailing punctuation
+        name = re.sub(r'\s+', ' ', name).strip().strip(',')
+        return name
+
     def _fetch_labels(self, drug_name: str, retries: int = 2) -> dict:
-        """Fetch labels with a basic retry mechanism for network instability."""
+        """Fetch labels with normalization to prevent 404 errors."""
+        # Normalize: "Diclofenac 50 MG Oral Tablet" -> "Diclofenac"
+        clean_name = self._normalize_drug_name(drug_name)
+        
         params = {
             "search": (
-                f'openfda.brand_name:"{drug_name}" '
-                f'openfda.generic_name:"{drug_name}"'
+                f'openfda.brand_name:"{clean_name}" '
+                f'openfda.generic_name:"{clean_name}"'
             ),
-            "limit": 5, # Reduced limit slightly for faster processing
+            "limit": 5, 
         }
         
         for attempt in range(retries + 1):
@@ -46,13 +61,19 @@ class USFDAChecker:
                 )
                 response.raise_for_status()
                 return response.json()
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    log.warning(f"FDA API: No records found for normalized name '{clean_name}'")
+                    return {}
+                log.error(f"FDA API HTTP Error for '{clean_name}': {e}")
+                break
             except requests.exceptions.Timeout:
-                log.warning(f"FDA API Timeout for '{drug_name}' (Attempt {attempt + 1})")
+                log.warning(f"FDA API Timeout for '{clean_name}' (Attempt {attempt + 1})")
                 if attempt < retries:
-                    sleep(1) # Small delay before retrying
+                    sleep(1)
                     continue
             except Exception as e:
-                log.error(f"FDA API Error for '{drug_name}': {str(e)}")
+                log.error(f"FDA API Error for '{clean_name}': {str(e)}")
                 break
         return {}
 

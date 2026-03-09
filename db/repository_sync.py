@@ -17,7 +17,7 @@ def save_report_sync(session: Session, job_id: str, report: Dict[str, Any]):
         favorable_count=len(summary.get("favorable", [])),
         conditional_count=len(summary.get("conditional", [])),
         unfavourable_count=len(summary.get("unfavourable", [])),
-        overridden_count=len(summary.get("overridden", []))
+        overridden_count=len(summary.get("joverridden", []))
     )
     session.add(db_report)
     session.commit() # Sync commit
