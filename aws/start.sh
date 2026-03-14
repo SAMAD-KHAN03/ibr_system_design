@@ -40,7 +40,7 @@ set -a && source "$APP_DIR/.env" && set +a || error ".env file not found at $APP
 # ── Start ─────────────────────────────────────────────────────────────────────
 info "Starting BRA server..."
 
-nohup uvicorn api.server:app \
+nohup vicorn api.servuer:app \
     --host 0.0.0.0 \
     --port 8000 \
     > "$LOG_DIR/server.log" 2>&1 &
