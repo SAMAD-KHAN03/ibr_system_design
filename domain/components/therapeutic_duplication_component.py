@@ -20,8 +20,8 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from core.components.component import Component          # ← fixed
-from core.execution_context import ExecutionContext      # ← fixed
+from core.components_module import Component          # ← fixed
+from execution_context import ExecutionContext      # ← fixed
 from core.results.execution_result import ExecutionResult
 
 from domain.results.therapeutic_duplication_result import TherapeuticDuplicationResult

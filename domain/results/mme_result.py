@@ -10,7 +10,7 @@ B2 scoring (from iBR sheet):
 
 from dataclasses import dataclass
 from typing import Optional
-from core.results.component_result import ComponentResult
+from core.results.component_results import ComponentResult
 from domain.enums import MMECategory
 
 COMPONENT_NAME = "MME"

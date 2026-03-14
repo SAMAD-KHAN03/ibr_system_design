@@ -1,11 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# stop.sh — Stop the BRA server
+# stop.sh — Stop the BRA server + Cloudflare tunnel
 # Usage: ./stop.sh
 # =============================================================================
 
 APP_DIR="/home/ubuntu/ibr_system_design"
-PID_FILE="$APP_DIR/server.pid"
+APP_PID_FILE="$APP_DIR/server.pid"
+TUNNEL_PID_FILE="$APP_DIR/tunnel.pid"
+TUNNEL_URL_FILE="$APP_DIR/tunnel_url.txt"
 
 GREEN="\033[1;32m"
 RED="\033[1;31m"
@@ -16,42 +18,57 @@ info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-# ── Check PID file ────────────────────────────────────────────────────────────
-if [ ! -f "$PID_FILE" ]; then
-    warn "No PID file found. Server may not be running."
-    # Try to kill by name as fallback
-    if pkill -f "uvicorn api.server:app" 2>/dev/null; then
-        info "Stopped leftover uvicorn process."
-    else
-        warn "No uvicorn process found either. Nothing to stop."
-    fi
-    exit 0
-fi
+stop_process() {
+    local pid_file="$1"
+    local name="$2"
+    local fallback_pattern="$3"
 
-PID=$(cat "$PID_FILE")
-
-# ── Stop ──────────────────────────────────────────────────────────────────────
-if ps -p "$PID" > /dev/null 2>&1; then
-    info "Stopping BRA server (PID $PID)..."
-    kill "$PID"
-
-    # Wait up to 10 seconds for clean shutdown
-    for i in $(seq 1 10); do
-        if ! ps -p "$PID" > /dev/null 2>&1; then
-            break
+    if [ ! -f "$pid_file" ]; then
+        warn "No PID file found for $name."
+        if pkill -f "$fallback_pattern" 2>/dev/null; then
+            info "Stopped leftover $name process by pattern."
+        else
+            warn "No $name process found either."
         fi
-        sleep 1
-    done
-
-    # Force kill if still alive
-    if ps -p "$PID" > /dev/null 2>&1; then
-        warn "Process did not stop cleanly. Force killing..."
-        kill -9 "$PID"
+        return
     fi
 
-    rm -f "$PID_FILE"
-    info "Server stopped."
-else
-    warn "PID $PID is not running. Cleaning up stale PID file."
-    rm -f "$PID_FILE"
-fi
+    local pid
+    pid=$(cat "$pid_file")
+
+    if ps -p "$pid" > /dev/null 2>&1; then
+        info "Stopping $name (PID $pid)..."
+        kill "$pid"
+
+        for i in $(seq 1 10); do
+            if ! ps -p "$pid" > /dev/null 2>&1; then
+                break
+            fi
+            sleep 1
+        done
+
+        if ps -p "$pid" > /dev/null 2>&1; then
+            warn "$name did not stop cleanly. Force killing..."
+            kill -9 "$pid"
+        fi
+
+        info "$name stopped."
+    else
+        warn "PID $pid for $name is not running."
+    fi
+
+    rm -f "$pid_file"
+}
+
+# ── Stop tunnel first ─────────────────────────────────────────────────────────
+stop_process "$TUNNEL_PID_FILE" "Cloudflare Tunnel" "cloudflared tunnel --url http://localhost:8000"
+
+# ── Stop app ──────────────────────────────────────────────────────────────────
+stop_process "$APP_PID_FILE" "BRA server" "uvicorn api.server:app"
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+rm -f "$TUNNEL_URL_FILE"
+
+info "================================================================"
+info " Cleanup complete."
+info "================================================================"

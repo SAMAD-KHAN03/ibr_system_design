@@ -4,10 +4,6 @@ infrastructure/fda_mme_checker.py
 FDA Market Experience (MME) infrastructure service.
 Wraps the drugsfda.json API — single responsibility: HTTP + data extraction only.
 No domain logic, no scoring, no enums.
-
-Original prototype: fda/mme_checker.py
-Ported to infrastructure layer: file I/O and scoring references removed,
-logic moved to free functions, class kept as thin HTTP wrapper.
 """
 
 import requests
@@ -57,12 +53,12 @@ class FDAMMEChecker:
             if response.status_code != 200:
                 return None
             results = response.json().get("results", [])
-            return self._process_results(results,drug_name=drug_name)
+            return self._process_results(results, drug_name=drug_name)
         except Exception as exc:
             print(f"  [FDAMMEChecker] API error for '{drug_name}': {exc}")
             return None
 
-    def _process_results(self, results: list,drug_name:str) -> Optional[Dict]:
+    def _process_results(self, results: list, drug_name: str) -> Optional[Dict]:
         earliest_date = None
         best_match    = None
 
@@ -99,7 +95,7 @@ class FDAMMEChecker:
 
             if earliest_date is None or date_obj < earliest_date:
                 earliest_date = date_obj
-                generic_name  = ", ".join(
+                generic_name = ", ".join(
                     i.get("name", "")
                     for p in products
                     for i in p.get("active_ingredients", [])

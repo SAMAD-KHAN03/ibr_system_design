@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from core.results.component_result import ComponentResult          # ← fixed import
+from core.results.component_results import ComponentResult          # ← fixed import
 from domain.enums import DuplicationCategory
 from infrastructure.therapeutic_duplication_infrastructure.duplication_checker import (
     DrugPairResult,
