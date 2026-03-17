@@ -6,25 +6,25 @@ from typing import Dict, List, Any, Optional
 
 class DiseaseSeverityAnalyzer:
     """
-    Infrastructure service: uses Gemini to classify the severity of untreated disease.
+    Infrastructure service: uses Claude to classify the severity of untreated disease.
     Corresponds to Factor 2.6 in the original prototype.
 
     Accepts patient_data + drug_data directly (no file I/O).
     Returns structured dict keyed by disease name.
     """
 
-    _MODEL = "gemini-2.0-flash"
+    _MODEL = "claude-sonnet-4-6"
 
     def __init__(self):
-        self._client = self._init_gemini()
+        self._client = self._init_claude()
 
-    def _init_gemini(self):
-        key = os.getenv("GEMINI_API_KEY", "")
+    def _init_claude(self):
+        key = os.getenv("ANTHROPIC_API_KEY", "")
         if not key:
             return None
         try:
-            from google import genai
-            return genai.Client(api_key=key)
+            import anthropic
+            return anthropic.Anthropic(api_key=key)
         except ImportError:
             return None
 
@@ -60,6 +60,10 @@ class DiseaseSeverityAnalyzer:
         is_pregnant = patient.get("is_pregnant", False)
         trimester   = patient.get("trimester")
         is_lactating = patient.get("is_lactating", False)
+        
+        # New fields from PatientModel
+        menstrual_history = patient.get("menstrual_history") 
+        
         medical_history = adapted.get("MedicalHistory", [])
         active_conditions = [h["diagnosisName"] for h in medical_history if h.get("status") == "Active"]
 
@@ -76,16 +80,27 @@ class DiseaseSeverityAnalyzer:
             f"- Diagnosis: {diagnosis}",
             f"- Immunosuppressed: {'Yes' if is_immuno else 'No'}",
         ]
+
+        # Added female-specific patient context
         if gender.lower() in ("female", "f"):
+            # Existing pregnancy logic
             if is_pregnant:
-                lines.append(f"- Pregnant (Trimester {trimester or 'Unknown'}): consequences affect mother and fetus")
+                lines.append(f"- Pregnancy Status: Pregnant")
+                lines.append(f"- Trimester: {trimester or 'Unknown'} (consequences affect mother and fetus)")
+            
+            # Added Menstrual History from PatientModel
+            if menstrual_history:
+                lines.append(f"- Menstrual History: {menstrual_history}")
+                
             if is_lactating:
                 lines.append("- Lactating: Active")
+
         if active_conditions:
             lines.append(f"- Active Comorbidities: {', '.join(active_conditions)}")
+            
         return "\n".join(lines)
 
-    # ── Gemini consequence analysis ───────────────────────────────────────────
+    # ── Claude consequence analysis ───────────────────────────────────────────
 
     def _analyze_disease(self, disease: str, patient_context: str) -> Dict[str, Any]:
         fallback = {
@@ -125,8 +140,13 @@ class DiseaseSeverityAnalyzer:
         ).replace("{disease}", disease)
 
         try:
-            resp = self._client.models.generate_content(model=self._MODEL, contents=prompt)
-            text = resp.text.strip().replace("```json", "").replace("```", "").strip()
+            resp = self._client.messages.create(
+                model=self._MODEL,
+                max_tokens=1024,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
             return json.loads(text)
         except Exception as exc:
             print(f"  [DiseaseSeverityAnalyzer] Error for {disease}: {exc}")

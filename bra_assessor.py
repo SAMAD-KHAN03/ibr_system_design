@@ -3,36 +3,67 @@ bra_assessor.py — Per-Medicine Assessment Runner
 
 CORRECT DESIGN:
   - The full BRA engine runs ONLY on newMedications (drugs under review).
-  - Background medicines in patient_data are CONTEXT only — used internally
-    by components for ADR/interaction checks, never independently assessed.
+  - Background medicines in patient_data are CONTEXT only.
   - assess() runs engine.execute() once per new_medication entry.
-  - All 6 benefit/risk factor results + RMM table are extracted in full
-    structured form from each component's metadata.
+  - All 6 benefit/risk factor results + structured RMM summary + patient
+    safety sheet are extracted and returned.
+
+RMM Summary structure (matches Image 1):
+  Grouped by medicine → each medicine has:
+    risk, lab_tests, symptoms_to_monitor, actions_required
+
+Patient Safety Sheet (matches Image 2):
+  Generated via Claude API — patient-readable numbered list:
+    1. Lab tests to perform (with frequency)
+    2. Symptoms to monitor and report
 """
 
+import json
+import requests
 from typing import Dict, Any, List
 from main import build_engine
 
 
-# ── Per-component metadata extractors ────────────────────────────────────────
-# Each function pulls the full structured data from a component's metadata dict.
-# This is the single place to update if a component's metadata schema changes.
+# ── Claude API call ───────────────────────────────────────────────────────────
+
+def _call_claude(prompt: str) -> str:
+    """Calls Claude claude-sonnet-4-6 and returns the text response."""
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"Content-Type": "application/json"},
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 1000,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        data = response.json()
+        content = data.get("content", [])
+        return " ".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
+    except Exception as exc:
+        print(f"  [PatientSafetySheet] Claude API error: {exc}")
+        return ""
+
+
+# ── Per-component metadata extractors ─────────────────────────────────────────
 
 def _extract_contraindication(meta: dict) -> dict:
     return {
-        "output":                meta.get("output", ""),
-        "overall_safe":          meta.get("overall_safe", True),
-        "summary":               meta.get("summary", {}),
-        "flagged_drugs":         meta.get("flagged_drugs", []),
-        "all_entries":           meta.get("all_entries", []),
+        "output":       meta.get("output", ""),
+        "overall_safe": meta.get("overall_safe", True),
+        "summary":      meta.get("summary", {}),
+        "flagged_drugs": meta.get("flagged_drugs", []),
+        "all_entries":  meta.get("all_entries", []),
     }
 
 
 def _extract_approval_status(meta: dict) -> dict:
     return {
-        "output":   meta.get("output", ""),
-        "summary":  meta.get("summary", {}),
-        "entries":  meta.get("entries", []),
+        "output":  meta.get("output", ""),
+        "summary": meta.get("summary", {}),
+        "entries": meta.get("entries", []),
     }
 
 
@@ -68,14 +99,14 @@ def _extract_therapeutic_duplication(meta: dict) -> dict:
 
 def _extract_adr_analysis(meta: dict) -> dict:
     return {
-        "output":                    meta.get("output", ""),
-        "adr_severity_category":     meta.get("adr_severity_category", ""),
-        "interaction_category":      meta.get("interaction_category", ""),
-        "lt_with_risk_factors":      meta.get("lt_with_risk_factors", 0),
-        "lt_without_risk_factors":   meta.get("lt_without_risk_factors", 0),
-        "serious_with_risk":         meta.get("serious_with_risk", 0),
-        "serious_without_risk":      meta.get("serious_without_risk", 0),
-        "interaction_count":         meta.get("interaction_count", 0),
+        "output":                  meta.get("output", ""),
+        "adr_severity_category":   meta.get("adr_severity_category", ""),
+        "interaction_category":    meta.get("interaction_category", ""),
+        "lt_with_risk_factors":    meta.get("lt_with_risk_factors", 0),
+        "lt_without_risk_factors": meta.get("lt_without_risk_factors", 0),
+        "serious_with_risk":       meta.get("serious_with_risk", 0),
+        "serious_without_risk":    meta.get("serious_without_risk", 0),
+        "interaction_count":       meta.get("interaction_count", 0),
     }
 
 
@@ -106,12 +137,12 @@ def _extract_alternatives(meta: dict) -> dict:
 
 def _extract_risk_mitigation(meta: dict) -> dict:
     return {
-        "output":                   meta.get("output", ""),
-        "preventability_category":  meta.get("preventability_category", ""),
-        "reversibility_category":   meta.get("reversibility_category", ""),
-        "irreversible_count":        meta.get("irreversible_count", 0),
-        "non_preventable_count":     meta.get("non_preventable_count", 0),
-        "total_adrs_analyzed":       meta.get("total_adrs_analyzed", 0),
+        "output":                  meta.get("output", ""),
+        "preventability_category": meta.get("preventability_category", ""),
+        "reversibility_category":  meta.get("reversibility_category", ""),
+        "irreversible_count":      meta.get("irreversible_count", 0),
+        "non_preventable_count":   meta.get("non_preventable_count", 0),
+        "total_adrs_analyzed":     meta.get("total_adrs_analyzed", 0),
     }
 
 
@@ -124,48 +155,33 @@ def _extract_disease_severity(meta: dict) -> dict:
     }
 
 
-# Map component name → extractor function
 _COMPONENT_EXTRACTORS = {
-    "Contraindication": _extract_contraindication,
-    "MME":              _extract_mme,
+    "Contraindication":     _extract_contraindication,
+    "MME":                  _extract_mme,
     "TherapeuticDuplication": _extract_therapeutic_duplication,
-    "ApprovalStatus":   _extract_approval_status,
-    "ADRAnalysis":      _extract_adr_analysis,
-    "RMM":              _extract_rmm,
-    "PubMed":           _extract_pubmed,
-    "Alternatives":     _extract_alternatives,
-    "RiskMitigation":   _extract_risk_mitigation,
-    "DiseaseSeverity":  _extract_disease_severity,
+    "ApprovalStatus":       _extract_approval_status,
+    "ADRAnalysis":          _extract_adr_analysis,
+    "RMM":                  _extract_rmm,
+    "PubMed":               _extract_pubmed,
+    "Alternatives":         _extract_alternatives,
+    "RiskMitigation":       _extract_risk_mitigation,
+    "DiseaseSeverity":      _extract_disease_severity,
 }
 
 
 def _extract_all_components(context) -> Dict[str, Any]:
-    """
-    Extracts full structured data from every component result in context.
-    Returns a dict keyed by component name, each value is the structured output.
-    """
     components = {}
     for name, result in context.component_results.items():
         meta = result.metadata or {}
         extractor = _COMPONENT_EXTRACTORS.get(name)
-        if extractor:
-            components[name] = extractor(meta)
-        else:
-            # Unknown component — fall back to full metadata passthrough
-            components[name] = meta
+        components[name] = extractor(meta) if extractor else meta
     return components
 
 
 def _build_factor_summary(components: Dict[str, Any], fs: dict) -> dict:
-    """
-    Builds a clean per-factor summary matching the iBR sheet B1-B6, R1-R5.
-    Makes it easy for the frontend to render each factor independently.
-    """
     bd = fs.get("benefit_breakdown", {})
     rd = fs.get("risk_breakdown", {})
-
     return {
-        # ── Benefit factors ──────────────────────────────────────────────────
         "B1_ApprovalStatus": {
             "score":    bd.get("B1_ApprovalStatus"),
             "category": components.get("ApprovalStatus", {}).get("summary", {}).get("approved_count"),
@@ -176,25 +192,24 @@ def _build_factor_summary(components: Dict[str, Any], fs: dict) -> dict:
             "category": components.get("MME", {}).get("mme_category"),
             "detail":   components.get("MME", {}),
         },
+        "B3_StrengthOfEvidence": {
+            "score":  bd.get("B3_StrengthOfEvidence"),
+            "detail": components.get("PubMed", {}),
+        },
         "B4_TherapeuticDuplication": {
             "score":    bd.get("B4_TherapeuticDuplication"),
             "category": components.get("TherapeuticDuplication", {}).get("duplication_category"),
             "detail":   components.get("TherapeuticDuplication", {}),
         },
-        "B3_StrengthOfEvidence": {
-            "score":    bd.get("B3_StrengthOfEvidence"),
-            "detail":   components.get("PubMed", {}),
-        },
         "B5_Alternatives": {
-            "score":    bd.get("B5_Alternatives"),
-            "detail":   components.get("Alternatives", {}),
+            "score":  bd.get("B5_Alternatives"),
+            "detail": components.get("Alternatives", {}),
         },
         "B6_DiseaseSeverity": {
             "score":    bd.get("B6_DiseaseSeverity"),
             "category": components.get("DiseaseSeverity", {}).get("severity_category"),
             "detail":   components.get("DiseaseSeverity", {}),
         },
-        # ── Risk factors ─────────────────────────────────────────────────────
         "R1_Contraindication": {
             "score":    rd.get("R1_Contraindication") or (fs.get("risk_total") if fs.get("override_triggered") else 0),
             "override": fs.get("override_triggered", False),
@@ -203,7 +218,7 @@ def _build_factor_summary(components: Dict[str, Any], fs: dict) -> dict:
         "R2_Interactions": {
             "score":    rd.get("R2_Interactions"),
             "category": components.get("ADRAnalysis", {}).get("interaction_category"),
-            "detail":   {
+            "detail": {
                 "interaction_category": components.get("ADRAnalysis", {}).get("interaction_category"),
                 "interaction_count":    components.get("ADRAnalysis", {}).get("interaction_count"),
                 "output":               components.get("ADRAnalysis", {}).get("output"),
@@ -212,19 +227,19 @@ def _build_factor_summary(components: Dict[str, Any], fs: dict) -> dict:
         "R3_ADRSeverity": {
             "score":    rd.get("R3_ADRSeverity"),
             "category": components.get("ADRAnalysis", {}).get("adr_severity_category"),
-            "detail":   {
-                "adr_severity_category":    components.get("ADRAnalysis", {}).get("adr_severity_category"),
-                "lt_with_risk_factors":     components.get("ADRAnalysis", {}).get("lt_with_risk_factors"),
-                "lt_without_risk_factors":  components.get("ADRAnalysis", {}).get("lt_without_risk_factors"),
-                "serious_with_risk":        components.get("ADRAnalysis", {}).get("serious_with_risk"),
-                "serious_without_risk":     components.get("ADRAnalysis", {}).get("serious_without_risk"),
-                "output":                   components.get("ADRAnalysis", {}).get("output"),
+            "detail": {
+                "adr_severity_category":   components.get("ADRAnalysis", {}).get("adr_severity_category"),
+                "lt_with_risk_factors":    components.get("ADRAnalysis", {}).get("lt_with_risk_factors"),
+                "lt_without_risk_factors": components.get("ADRAnalysis", {}).get("lt_without_risk_factors"),
+                "serious_with_risk":       components.get("ADRAnalysis", {}).get("serious_with_risk"),
+                "serious_without_risk":    components.get("ADRAnalysis", {}).get("serious_without_risk"),
+                "output":                  components.get("ADRAnalysis", {}).get("output"),
             },
         },
         "R4_RiskPreventability": {
             "score":    rd.get("R4_RiskPreventability"),
             "category": components.get("RiskMitigation", {}).get("preventability_category"),
-            "detail":   {
+            "detail": {
                 "preventability_category": components.get("RiskMitigation", {}).get("preventability_category"),
                 "non_preventable_count":   components.get("RiskMitigation", {}).get("non_preventable_count"),
                 "total_adrs_analyzed":     components.get("RiskMitigation", {}).get("total_adrs_analyzed"),
@@ -234,7 +249,7 @@ def _build_factor_summary(components: Dict[str, Any], fs: dict) -> dict:
         "R5_RiskReversibility": {
             "score":    rd.get("R5_RiskReversibility"),
             "category": components.get("RiskMitigation", {}).get("reversibility_category"),
-            "detail":   {
+            "detail": {
                 "reversibility_category": components.get("RiskMitigation", {}).get("reversibility_category"),
                 "irreversible_count":     components.get("RiskMitigation", {}).get("irreversible_count"),
                 "total_adrs_analyzed":    components.get("RiskMitigation", {}).get("total_adrs_analyzed"),
@@ -244,21 +259,251 @@ def _build_factor_summary(components: Dict[str, Any], fs: dict) -> dict:
     }
 
 
+# ── RMM Summary ───────────────────────────────────────────────────────────────
+
 def _build_rmm_summary(rmm_data: dict) -> dict:
     """
-    Builds the RMM summary section from RMM component data.
-    Mirrors the format from the previous working system.
+    Restructures the flat RMM table into the grouped-by-medicine format
+    matching Image 1:
+
+    {
+        "total_entries": int,
+        "lt_entries": int,
+        "serious_entries": int,
+        "by_medicine": [
+            {
+                "medicine": "Amlodipine",
+                "risks": [
+                    {
+                        "risk": "Heart Failure",
+                        "risk_type": "LT/Fatal ADR",
+                        "lab_tests": "...",           ← from section_5_warnings
+                        "symptoms_to_monitor": [...], ← parsed from proactive_actions
+                        "actions_required": "...",    ← immediate_actions_required
+                        "actions_reasoning": "...",   ← immediate_actions_reasoning
+                        "fda_warning_extract": "...", ← section_5_warnings_and_precautions_extract
+                    },
+                    ...
+                ]
+            },
+            ...
+        ]
+    }
     """
     rmm_table = rmm_data.get("rmm_table", [])
     total     = rmm_data.get("total_entries", len(rmm_table))
     lt_count  = rmm_data.get("lt_entries", sum(1 for e in rmm_table if "LT" in e.get("risk_type", "")))
 
+    # Group entries by medicine name
+    medicine_map: Dict[str, List[dict]] = {}
+    for entry in rmm_table:
+        med = entry.get("medicine", "Unknown")
+        if med not in medicine_map:
+            medicine_map[med] = []
+
+        # Parse symptoms into a clean list
+        raw_symptoms = entry.get("proactive_actions_symptoms_to_monitor", "")
+        symptoms_list = [s.strip() for s in raw_symptoms.split(",") if s.strip()] if raw_symptoms else []
+
+        # Extract lab tests from section_5 text — if it contains "lab" or "monitor" keywords
+        # Otherwise use a cleaned version of the FDA extract
+        fda_extract = entry.get("section_5_warnings_and_precautions_extract", "")
+        lab_tests = _extract_lab_tests(fda_extract, entry.get("risk_description", ""))
+
+        medicine_map[med].append({
+            "risk":               entry.get("risk_description", ""),
+            "risk_type":          entry.get("risk_type", ""),
+            "lab_tests":          lab_tests,
+            "symptoms_to_monitor": symptoms_list,
+            "actions_required":   entry.get("immediate_actions_required", ""),
+            "actions_reasoning":  entry.get("immediate_actions_reasoning", ""),
+            "fda_warning_extract": fda_extract if fda_extract and fda_extract != "NA" else "",
+        })
+
+    by_medicine = [
+        {"medicine": med, "risks": risks}
+        for med, risks in medicine_map.items()
+    ]
+
     return {
-        "total_entries":          total,
-        "lt_entries":             lt_count,
-        "serious_entries":        total - lt_count,
-        "output":                 rmm_data.get("output", ""),
-        "table":                  rmm_table,
+        "total_entries":   total,
+        "lt_entries":      lt_count,
+        "serious_entries": total - lt_count,
+        "by_medicine":     by_medicine,   # grouped by medicine (for accordion UI)
+        "table":           rmm_table,     # flat raw table (all entries)
+    }
+
+
+def _extract_lab_tests(fda_extract: str, risk_description: str) -> str:
+    """
+    Derives a lab test recommendation from the FDA label extract and risk type.
+    Falls back to risk-based defaults for well-known ADRs.
+    """
+    if fda_extract and fda_extract != "NA":
+        lower = fda_extract.lower()
+        if any(k in lower for k in ["lab", "monitor", "test", "serum", "ecg", "blood"]):
+            # Return first meaningful sentence containing a lab keyword
+            for sentence in fda_extract.split("."):
+                if any(k in sentence.lower() for k in ["lab", "monitor", "test", "serum", "ecg", "blood"]):
+                    return sentence.strip() + "."
+
+    # Risk-based defaults for common ADRs
+    risk_lower = risk_description.lower()
+    defaults = {
+        "heart failure":    "BNP / NT-proBNP, echocardiogram, chest X-ray, serum electrolytes",
+        "hepatic failure":  "LFTs (ALT, AST, bilirubin, ALP) every 2 weeks",
+        "stroke":           "Blood pressure monitoring, platelet count, coagulation studies",
+        "renal failure":    "Serum creatinine, eGFR, urine output monitoring",
+        "hyperkalaemia":    "Serum potassium every 2–4 days",
+        "gi bleed":         "FBC, haemoglobin, stool occult blood test",
+        "lactic acidosis":  "Serum lactate, arterial blood gas",
+        "anaphylaxis":      "No routine lab test — clinical monitoring required",
+        "ototoxicity":      "Audiometry baseline and periodic hearing tests",
+        "pulmonary":        "Chest X-ray, pulmonary function tests",
+    }
+    for keyword, lab in defaults.items():
+        if keyword in risk_lower:
+            return lab
+    return "Routine clinical monitoring as per prescriber guidance"
+
+
+# ── Patient Safety Sheet ──────────────────────────────────────────────────────
+
+def _generate_patient_safety_sheet(
+    rmm_table: List[dict],
+    drug_name: str,
+    patient_data: dict,
+) -> dict:
+    """
+    Calls Claude claude-sonnet-4-6 to generate a patient-readable safety sheet
+    matching Image 2:
+
+    {
+        "lab_tests": [
+            { "test": "Liver function tests", "frequency": "every 2 weeks" },
+            { "test": "Serum electrolytes",   "frequency": "every week" }
+        ],
+        "symptoms_to_monitor": [
+            "Muscle weakness, numbness/tingling, nausea...",
+            ...
+        ],
+        "summary_text": "Full patient-readable paragraph"
+    }
+    """
+    if not rmm_table:
+        return {
+            "lab_tests": [],
+            "symptoms_to_monitor": [],
+            "summary_text": "No specific monitoring requirements identified.",
+        }
+
+    # Build a compact summary of all RMM entries for the prompt
+    rmm_lines = []
+    for entry in rmm_table:
+        rmm_lines.append(
+            f"- Medicine: {entry.get('medicine')} | "
+            f"Risk: {entry.get('risk_description')} | "
+            f"Symptoms: {entry.get('proactive_actions_symptoms_to_monitor', '')} | "
+            f"Action: {entry.get('immediate_actions_required', '')}"
+        )
+
+    patient_age    = patient_data.get("age", "")
+    patient_gender = patient_data.get("gender", "")
+    diagnoses      = ", ".join(
+        dx.get("name", "") for dx in patient_data.get("currentDiagnosis", []) if dx.get("name")
+    )
+
+    prompt = f"""You are a clinical pharmacist creating a patient safety sheet.
+
+Patient: {patient_age}-year-old {patient_gender}, diagnosed with: {diagnoses}
+New medication being assessed: {drug_name}
+
+Risk Monitoring Requirements (from FDA labels):
+{chr(10).join(rmm_lines)}
+
+Generate a patient safety sheet in the following JSON format ONLY — no preamble, no markdown, no explanation:
+{{
+  "lab_tests": [
+    {{"test": "<test name>", "frequency": "<how often>"}}
+  ],
+  "symptoms_to_monitor": [
+    "<symptom group 1>",
+    "<symptom group 2>"
+  ],
+  "summary_text": "<2-3 sentence plain-language summary for the patient>"
+}}
+
+Rules:
+- Deduplicate — if the same lab test or symptom appears for multiple medicines, list it once
+- Group related symptoms together (e.g. cardiac symptoms in one item, hepatic in another)
+- Use plain language a patient can understand
+- lab_tests: include only tests that require scheduling (exclude clinical observation)
+- symptoms_to_monitor: max 4 items, each a comma-separated list of related symptoms
+- summary_text: tell the patient what to do and when to contact their doctor
+- Return ONLY the JSON object, nothing else"""
+
+    print(f"  [PatientSafetySheet] Generating for '{drug_name}'...")
+    raw = _call_claude(prompt)
+
+    if not raw:
+        return _fallback_patient_safety_sheet(rmm_table)
+
+    # Strip any accidental markdown fences
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip().rstrip("```").strip()
+
+    try:
+        parsed = json.loads(raw)
+        # Validate expected keys exist
+        return {
+            "lab_tests":           parsed.get("lab_tests", []),
+            "symptoms_to_monitor": parsed.get("symptoms_to_monitor", []),
+            "summary_text":        parsed.get("summary_text", ""),
+        }
+    except (json.JSONDecodeError, Exception) as exc:
+        print(f"  [PatientSafetySheet] JSON parse error: {exc} — using fallback")
+        return _fallback_patient_safety_sheet(rmm_table)
+
+
+def _fallback_patient_safety_sheet(rmm_table: List[dict]) -> dict:
+    """Fallback when Claude API is unavailable — derives from RMM table directly."""
+    all_symptoms: List[str] = []
+    lab_tests_seen: set = set()
+    lab_tests: List[dict] = []
+
+    for entry in rmm_table:
+        raw = entry.get("proactive_actions_symptoms_to_monitor", "")
+        if raw:
+            all_symptoms.extend([s.strip() for s in raw.split(",") if s.strip()])
+
+        risk = entry.get("risk_description", "").lower()
+        lab  = _extract_lab_tests("", risk)
+        if lab and lab not in lab_tests_seen:
+            lab_tests_seen.add(lab)
+            lab_tests.append({"test": lab, "frequency": "as directed by your doctor"})
+
+    # Deduplicate symptoms and group into max 3 items
+    seen_symptoms: set = set()
+    unique_symptoms: List[str] = []
+    for s in all_symptoms:
+        if s.lower() not in seen_symptoms:
+            seen_symptoms.add(s.lower())
+            unique_symptoms.append(s)
+
+    grouped = [", ".join(unique_symptoms[i:i+5]) for i in range(0, min(len(unique_symptoms), 15), 5)]
+
+    return {
+        "lab_tests":           lab_tests[:4],
+        "symptoms_to_monitor": grouped[:4],
+        "summary_text": (
+            "Please follow up with your healthcare provider as scheduled. "
+            "Report any new or worsening symptoms immediately, "
+            "especially those listed above."
+        ),
     }
 
 
@@ -267,39 +512,10 @@ def _build_rmm_summary(rmm_data: dict) -> dict:
 def assess(patient_data: dict, new_medications: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     Runs the full BRA pipeline once per new medication under review.
-
-    Parameters
-    ----------
-    patient_data    : internal patient schema (after request_adapter)
-    new_medications : list of {name, condition, dosage}
-
-    Returns
-    -------
-    {
-        "per_medicine": {
-            "<drug_name>": {
-                "drug":              str,
-                "condition":         str,
-                "dosage":            str,
-                "ibr_score":         float | None,
-                "ibr_outcome":       str | None,
-                "benefit_total":     float | None,
-                "risk_total":        float | None,
-                "benefit_breakdown": { B1, B3, B5, B6 scores },
-                "risk_breakdown":    { R2, R3, R4, R5 scores },
-                "max_benefit":       float | None,
-                "max_risk":          float | None,
-                "override_triggered": bool,
-                "override_rule":     str | None,
-                "factors":           { B1, B3, B5, B6, R1, R2, R3, R4, R5 structured },
-                "rmm_summary":       { total, lt_count, table[] },
-                "components":        { full metadata per component },
-                "warnings":          list[str],
-                "halted":            bool,
-            }
-        },
-        "summary": { ... }
-    }
+    Returns structured per-medicine results including:
+      - All 9 iBR factors (B1-B6, R1-R5) with scores and detail
+      - rmm_summary: grouped by medicine (matches RMM Summary image)
+      - patient_safety_sheet: patient-readable summary (matches Safety Sheet image)
     """
     engine = build_engine()
 
@@ -328,11 +544,11 @@ def assess(patient_data: dict, new_medications: List[Dict[str, str]]) -> Dict[st
 
         if context is None:
             per_medicine[drug_name] = {
-                "drug":    drug_name,
+                "drug":      drug_name,
                 "condition": med.get("condition", ""),
-                "dosage":  med.get("dosage", ""),
-                "error":   "Engine returned no context",
-                "halted":  True,
+                "dosage":    med.get("dosage", ""),
+                "error":     "Engine returned no context",
+                "halted":    True,
             }
             unfavourable.append(drug_name)
             continue
@@ -340,14 +556,19 @@ def assess(patient_data: dict, new_medications: List[Dict[str, str]]) -> Dict[st
         fs = context.final_score or {}
         halted = fs.get("ibr_score") is None
 
-        # Extract full structured data from every component
         components = _extract_all_components(context)
+        factors    = _build_factor_summary(components, fs)
 
-        # Build per-factor view (B1-B6, R1-R5)
-        factors = _build_factor_summary(components, fs)
-
-        # Build RMM summary section
+        # ── Structured RMM summary (grouped by medicine) ─────────────────────
         rmm_summary = _build_rmm_summary(components.get("RMM", {}))
+
+        # ── Patient safety sheet (Claude-generated) ───────────────────────────
+        raw_rmm_table = components.get("RMM", {}).get("rmm_table", [])
+        patient_safety_sheet = _generate_patient_safety_sheet(
+            rmm_table=raw_rmm_table,
+            drug_name=drug_name,
+            patient_data=patient_data,
+        )
 
         entry = {
             "drug":               drug_name,
@@ -364,9 +585,10 @@ def assess(patient_data: dict, new_medications: List[Dict[str, str]]) -> Dict[st
             "max_risk":           fs.get("max_risk"),
             "override_triggered": fs.get("override_triggered", False),
             "override_rule":      fs.get("override_rule"),
-            "factors":            factors,       # ← full B1-B6 R1-R5 structured
-            "rmm_summary":        rmm_summary,   # ← full RMM table + summary
-            "components":         components,    # ← raw component outputs passthrough
+            "factors":            factors,
+            "rmm_summary":        rmm_summary,
+            "patient_safety_sheet": patient_safety_sheet,
+            "components":         components,
             "warnings":           context.warnings,
             "halted":             halted,
         }
@@ -429,23 +651,32 @@ def print_report(report: Dict[str, Any]) -> None:
         else:
             print(f"  Benefit total : {entry.get('benefit_total')} / {entry.get('max_benefit')}")
             print(f"  Risk total    : {entry.get('risk_total')} / {entry.get('max_risk')}")
-            print(f"  Benefit B/D   : {entry.get('benefit_breakdown')}")
-            print(f"  Risk B/D      : {entry.get('risk_breakdown')}")
 
         print(f"  iBR Score   : {entry.get('ibr_score')}")
         print(f"  iBR Outcome : {entry.get('ibr_outcome')}")
 
         rmm = entry.get("rmm_summary", {})
-        if rmm.get("total_entries"):
-            print(f"\n  RMM: {rmm['total_entries']} entries ({rmm['lt_entries']} LT, {rmm['serious_entries']} serious)")
+        print(f"\n  RMM Summary: {rmm.get('total_entries', 0)} entries")
+        for med_block in rmm.get("by_medicine", []):
+            print(f"    [{med_block['medicine']}]")
+            for risk in med_block.get("risks", []):
+                print(f"      Risk: {risk['risk']}")
+                print(f"      Symptoms: {', '.join(risk['symptoms_to_monitor'][:3])}")
+                print(f"      Action: {risk['actions_required']}")
+
+        pss = entry.get("patient_safety_sheet", {})
+        if pss.get("lab_tests") or pss.get("symptoms_to_monitor"):
+            print("\n  Patient Safety Sheet:")
+            for lt in pss.get("lab_tests", []):
+                print(f"    Lab: {lt.get('test')} — {lt.get('frequency')}")
+            for sym in pss.get("symptoms_to_monitor", []):
+                print(f"    Monitor: {sym[:80]}")
 
         factors = entry.get("factors", {})
         if factors:
             print("\n  Factor scores:")
             for factor, data in factors.items():
-                score = data.get("score")
-                cat   = data.get("category", "")
-                print(f"    {factor}: score={score}  category={cat}")
+                print(f"    {factor}: score={data.get('score')}  category={data.get('category', '')}")
 
         if entry.get("warnings"):
             print("  Warnings:")

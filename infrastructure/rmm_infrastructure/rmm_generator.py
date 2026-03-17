@@ -2,6 +2,7 @@ import os
 import re
 import time
 import requests
+import json
 from typing import Dict, List, Any, Optional
 
 from infrastructure.adr_infrastructure.helpers import _extract_text
@@ -13,37 +14,25 @@ class RMMGenerator:
 
     Corresponds to Step 4 in the original prototype.
     Accepts ADR analysis dict directly (no file I/O) and returns the rmm_table list.
-    Gemini client is injected so the component can stub it in tests.
+    Claude client is injected so the component can stub it in tests.
     """
 
-    _MODEL = "gemini-2.0-flash"
+    _MODEL = "claude-sonnet-4-6"
 
     def __init__(self):
         self._fda_api_key  = os.getenv("FDA_API_KEY", "")
         self._fda_base_url = "https://api.fda.gov/drug/label.json"
-        self._client       = self._init_gemini()
-        self._config       = self._init_config()
+        self._client       = self._init_claude()
 
-    # ── Gemini setup ─────────────────────────────────────────────────────────
+    # ── Claude setup ─────────────────────────────────────────────────────────
 
-    def _init_gemini(self):
-        gemini_key = os.getenv("GEMINI_API_KEY", "")
-        if not gemini_key:
+    def _init_claude(self):
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not anthropic_key:
             return None
         try:
-            from google import genai
-            return genai.Client(api_key=gemini_key)
-        except ImportError:
-            return None
-
-    def _init_config(self):
-        try:
-            from google.genai import types
-            return types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=1000,
-                response_mime_type="application/json",
-            )
+            import anthropic
+            return anthropic.Anthropic(api_key=anthropic_key)
         except ImportError:
             return None
 
@@ -97,7 +86,7 @@ class RMMGenerator:
     # ── Patient context builder ───────────────────────────────────────────────
 
     def build_patient_context(self, patient_data: dict, drug_data: dict) -> str:
-        """Builds plain-text patient context string for Gemini prompts."""
+        """Builds plain-text patient context string for Claude prompts."""
         from infrastructure.adr_infrastructure.patient_adapter import to_adr_patient_data
         adapted     = to_adr_patient_data(patient_data, drug_data)
         patient     = adapted["patient"]
@@ -107,6 +96,10 @@ class RMMGenerator:
         is_pregnant = patient.get("is_pregnant", False)
         trimester   = patient.get("trimester")
         is_lactating = patient.get("is_lactating", False)
+        
+        # New field from Flutter PatientModel
+        menstrual_history = patient.get("menstrual_history") 
+        
         medical_history = adapted.get("MedicalHistory", [])
         active_conditions = [h["diagnosisName"] for h in medical_history if h.get("status") == "Active"]
 
@@ -123,26 +116,27 @@ class RMMGenerator:
             f"- Primary Diagnosis: {diagnosis}",
             f"- Immunosuppressed: {'Yes' if is_immuno else 'No'}",
         ]
+
+        # Added female-specific patient context
         if gender.lower() in ("female", "f"):
-            lines.append(f"- Pregnancy Status: {patient.get('pregnancy_status', 'Not Applicable')}")
+            lines.append(f"- Pregnancy Status: {'Pregnant' if is_pregnant else 'Not Pregnant'}")
+            
             if is_pregnant:
                 lines.append(f"- Trimester: {trimester or 'Unknown'}")
+            
+            # Added Menstrual History from PatientModel
+            if menstrual_history:
+                lines.append(f"- Menstrual History: {menstrual_history}")
+                
             if is_lactating:
                 lines.append("- Lactation: Active")
+
         if active_conditions:
             lines.append(f"- Active Comorbidities: {', '.join(active_conditions)}")
 
         lines.append("\nPATIENT-SPECIFIC MONITORING CONSIDERATIONS:")
         if is_elderly:
             lines.append("- Elderly: Requires more frequent monitoring (reduced organ reserve, polypharmacy)")
-        if is_immuno:
-            lines.append("- Immunosuppressed: Higher infection risk, closer monitoring needed")
-        if is_pregnant:
-            lines.append(f"- Pregnant (Trimester {trimester}): Include fetal monitoring")
-        if is_lactating:
-            lines.append("- Lactating: Monitor infant for drug effects")
-
-        return "\n".join(lines)
 
     # ── Section 5 monitoring extraction ──────────────────────────────────────
 
@@ -183,7 +177,7 @@ class RMMGenerator:
         hits = [s.strip() for s in sentences if any(k in s.lower() for k in monitor_kw) and len(s.strip()) > 20]
         return ". ".join(hits[:2]) if hits else "NA"
 
-    # ── Gemini: proactive symptoms ────────────────────────────────────────────
+    # ── Claude: proactive symptoms ────────────────────────────────────────────
 
     def _generate_proactive_actions(
         self, medicine: str, adr_name: str, fda_sections: dict, patient_context: str = ""
@@ -204,17 +198,20 @@ class RMMGenerator:
             "Return ONLY a comma-separated list of symptoms. No preamble, no explanations."
         )
         try:
-            response = self._client.models.generate_content(
-                model=self._MODEL, contents=prompt, config=self._config
+            response = self._client.messages.create(
+                model=self._MODEL,
+                max_tokens=1000,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}]
             )
-            text = response.text.strip().replace("\n", ", ")
+            text = response.content[0].text.strip().replace("\n", ", ")
             text = re.sub(r"^(symptoms?|signs?|monitor):\s*", "", text, flags=re.IGNORECASE)
             return text
         except Exception as exc:
-            print(f"  [RMMGenerator] Gemini error (proactive): {exc}")
+            print(f"  [RMMGenerator] Claude error (proactive): {exc}")
             return f"Monitor patient for signs and symptoms of {adr_name}"
 
-    # ── Gemini: immediate actions ─────────────────────────────────────────────
+    # ── Claude: immediate actions ─────────────────────────────────────────────
 
     _STRICT_RULES = {
         "lactic acidosis":          "Discontinuation with initiation of better alternatives in safety and efficacy",
@@ -262,17 +259,20 @@ class RMMGenerator:
             "Respond EXACTLY:\nACTION: <action>\nREASONING: <one sentence>"
         )
         try:
-            response = self._client.models.generate_content(
-                model=self._MODEL, contents=prompt, config=self._config
+            response = self._client.messages.create(
+                model=self._MODEL,
+                max_tokens=1000,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}]
             )
-            text = response.text.strip()
+            text = response.content[0].text.strip()
             action_m    = re.search(r"ACTION:\s*(.+?)(?:\n|REASONING:)", text, re.IGNORECASE | re.DOTALL)
             reasoning_m = re.search(r"REASONING:\s*(.+?)(?:\n|$)", text, re.IGNORECASE | re.DOTALL)
             action    = action_m.group(1).strip()    if action_m    else "Discontinuation with initiation of better alternatives in safety and efficacy"
             reasoning = reasoning_m.group(1).strip() if reasoning_m else f"Based on severity of {adr_name}"
             return {"action": action, "reasoning": reasoning}
         except Exception as exc:
-            print(f"  [RMMGenerator] Gemini error (actions): {exc}")
+            print(f"  [RMMGenerator] Claude error (actions): {exc}")
             return {"action": "Discontinuation with initiation of better alternatives in safety and efficacy",
                     "reasoning": f"Based on severity of {adr_name}"}
 

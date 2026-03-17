@@ -17,7 +17,7 @@ class RiskMitigationAnalyzer:
     Returns structured dict with reversibility and preventability results.
     """
 
-    _MODEL = "gemini-2.0-flash"
+    _MODEL = "claude-sonnet-4-6"
 
     STRICT_IRREVERSIBLE = [
         "stevens-johnson syndrome", "stevens johnson", "sjs",
@@ -59,15 +59,15 @@ class RiskMitigationAnalyzer:
     def __init__(self):
         self._fda_api_key  = os.getenv("FDA_API_KEY", "")
         self._fda_base_url = "https://api.fda.gov/drug/label.json"
-        self._client       = self._init_gemini()
+        self._client       = self._init_claude()
 
-    def _init_gemini(self):
-        key = os.getenv("GEMINI_API_KEY", "")
+    def _init_claude(self):
+        key = os.getenv("ANTHROPIC_API_KEY", "")
         if not key:
             return None
         try:
-            from google import genai
-            return genai.Client(api_key=key)
+            import anthropic
+            return anthropic.Anthropic(api_key=key)
         except ImportError:
             return None
 
@@ -167,11 +167,16 @@ class RiskMitigationAnalyzer:
             '{"classification":"...","reasoning":"...","fda_evidence":"...","keywords_found":[]}'
         )
         try:
-            resp = self._client.models.generate_content(model=self._MODEL, contents=prompt)
-            text = resp.text.strip().replace("```json", "").replace("```", "")
+            resp = self._client.messages.create(
+                model=self._MODEL,
+                max_tokens=1000,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = resp.content[0].text.strip().replace("```json", "").replace("```", "")
             return json.loads(text)
         except Exception as exc:
-            print(f"  [RiskMitigationAnalyzer] Gemini reversibility error: {exc}")
+            print(f"  [RiskMitigationAnalyzer] Claude reversibility error: {exc}")
             return {"classification": "Reversible ADR", "reasoning": "Fallback", "fda_evidence": "API error", "keywords_found": []}
 
     # ── Preventability classification ─────────────────────────────────────────
@@ -216,11 +221,16 @@ class RiskMitigationAnalyzer:
             '{"classification":"...","reasoning":"...","fda_evidence":"...","prevention_measures":[]}'
         )
         try:
-            resp = self._client.models.generate_content(model=self._MODEL, contents=prompt)
-            text = resp.text.strip().replace("```json", "").replace("```", "")
+            resp = self._client.messages.create(
+                model=self._MODEL,
+                max_tokens=1000,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = resp.content[0].text.strip().replace("```json", "").replace("```", "")
             return json.loads(text)
         except Exception as exc:
-            print(f"  [RiskMitigationAnalyzer] Gemini preventability error: {exc}")
+            print(f"  [RiskMitigationAnalyzer] Claude preventability error: {exc}")
             return {"classification": "Non-preventable ADR", "reasoning": "Fallback", "fda_evidence": "API error", "prevention_measures": []}
 
     # ── Main entrypoint ───────────────────────────────────────────────────────

@@ -1,28 +1,27 @@
 import os
 
 try:
-    from google import genai
-    from google.genai import types  # Updated to match the second file's import style
-    _GEMINI_AVAILABLE = True
+    import anthropic
+    _CLAUDE_AVAILABLE = True
 except ImportError:
-    _GEMINI_AVAILABLE = False
+    _CLAUDE_AVAILABLE = False
 
 
-class GeminiExplainer:
+class ClaudeExplainer:
     """
-    Infrastructure-layer service: wraps the Gemini API (google-genai package)
+    Infrastructure-layer service: wraps the Anthropic API (anthropic package)
     to produce clinical explanations of contraindications.
     """
 
-    # Updated to match the second file's experimental flash model or standard flash
-    _MODEL = "gemini-2.0-flash" 
+    # Using the latest 2026 Sonnet model
+    _MODEL = "claude-sonnet-4-6" 
 
     def __init__(self):
-        api_key = os.getenv("GEMINI_API_KEY", "")
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self._client = None
-        # Consistent initialization pattern
-        if _GEMINI_AVAILABLE and api_key:
-            self._client = genai.Client(api_key=api_key)
+        
+        if _CLAUDE_AVAILABLE and api_key:
+            self._client = anthropic.Anthropic(api_key=api_key)
 
     def explain(
         self,
@@ -33,7 +32,7 @@ class GeminiExplainer:
         patient_context: str = "",
     ) -> str:
         """
-        Returns a 2-3 sentence clinical explanation using the google-genai SDK.
+        Returns a 2-3 sentence clinical explanation using the Anthropic SDK.
         """
         if not self._client or not fda_context:
             return self._fallback(drug, risk_concept)
@@ -56,22 +55,20 @@ focusing on the {risk_concept.replace("_", " ").lower()} concern. \
 Use clear clinical language."""
 
         try:
-            # Using the types.GenerateContentConfig pattern from the second file
-            config = types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=200,
-            )
-            
-            # Using the client.models.generate_content pattern
-            response = self._client.models.generate_content(
+            # Anthropic uses the messages.create pattern
+            response = self._client.messages.create(
                 model=self._MODEL,
-                contents=prompt,
-                config=config,
+                max_tokens=200,
+                temperature=0.0,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
             )
-            return response.text.strip()
+            # Content is returned as a list of content blocks
+            return response.content[0].text.strip()
             
         except Exception as exc:
-            print(f"  [GeminiExplainer] API error: {type(exc).__name__} - {exc}")
+            print(f"  [ClaudeExplainer] API error: {type(exc).__name__} - {exc}")
             return self._fallback(drug, risk_concept)
 
     @staticmethod

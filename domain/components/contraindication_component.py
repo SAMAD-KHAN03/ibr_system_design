@@ -10,7 +10,7 @@ from domain.results.contraindication_result import (
 )
 from infrastructure.contraindication_infrastructure.fda_label_fetcher import FDALabelFetcher
 from infrastructure.contraindication_infrastructure.concept_extractor import extract_concepts, extract_contraindication_concepts
-from infrastructure.contraindication_infrastructure.gemini_explainer import GeminiExplainer
+from infrastructure.contraindication_infrastructure.claude_explainer import ClaudeExplainer
 
 
 class ContraindicationComponent(Component):
@@ -38,10 +38,10 @@ class ContraindicationComponent(Component):
     def __init__(
         self,
         fetcher:   FDALabelFetcher = None,
-        explainer: GeminiExplainer = None,
+        explainer: ClaudeExplainer = None,
     ):
         self._fetcher   = fetcher   or FDALabelFetcher()
-        self._explainer = explainer or GeminiExplainer()
+        self._explainer = explainer or ClaudeExplainer()
 
     @property
     def component_name(self) -> str:
@@ -269,20 +269,37 @@ class ContraindicationComponent(Component):
     @staticmethod
     def _build_patient_context(context: ExecutionContext) -> str:
         p = context.patient_data
+        gender = p.get('gender', 'unknown')
+        
         lines = [
             f"Age: {p.get('age', 'unknown')}",
-            f"Gender: {p.get('gender', 'unknown')}",
+            f"Gender: {gender}",
             f"Chief complaint: {p.get('chiefComplaint', '')}",
         ]
+
+        # Female-specific patient context (Non-medical)
+        if gender.lower() == "female":
+            if p.get('isPregnant'):
+                lines.append("Status: Pregnant")
+            
+            m_history = p.get('menstrualHistory')
+            if m_history:
+                lines.append(f"Menstrual History: {m_history}")
+
+        # Medical Context
         current_dx = [d.get("name", "") for d in p.get("currentDiagnosis", []) if d.get("name")]
         if current_dx:
             lines.append(f"Current diagnoses: {', '.join(current_dx)}")
+            
         past = [c.get("conditionName", "") for c in p.get("pastMedicalConditions", []) if c.get("conditionName")]
         if past:
             lines.append(f"Past conditions: {', '.join(past)}")
+
+        # Pregnancy/Lactation Details (Medical Specifics)
         preg = p.get("pregnancy_info", {})
         if preg.get("pregnancy_status") == "Ongoing Pregnancy":
-            lines.append(f"Pregnancy: {preg.get('Trimester', 'unknown trimester')}")
+            lines.append(f"Pregnancy Detail: {preg.get('Trimester', 'unknown trimester')}")
         if preg.get("lactation") == "Yes":
             lines.append("Lactation: active")
+
         return "\n".join(lines)
