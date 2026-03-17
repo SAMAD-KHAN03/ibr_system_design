@@ -181,16 +181,34 @@ def submit_assessment(body: AssessRequest):
         "submitted_at": job["submitted_at"],
     }
 
-
 @app.get("/assess/{job_id}")
 def get_assessment(job_id: str):
-    """Poll for assessment result (reads from in-memory store)."""
+    """
+    Poll for assessment result.
+    First checks in-memory store (fast path).
+    If not found there (e.g. after restart), falls back to Postgres.
+    """
     status_entry = get_job_status(job_id)
 
-    if status_entry.get("status") == "not_found":
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    # Fast path: in-memory result exists
+    if status_entry.get("status") != "not_found":
+        return status_entry
 
-    return status_entry
+    # Fallback: persisted report in Postgres
+    row = fetch_report(job_id)
+    if row is not None:
+        return {
+            "job_id": row["job_id"],
+            "status": row["status"],
+            "result": row.get("result"),
+            "error": row.get("error"),
+            "queued_at": row.get("queued_at"),
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "source": "postgres"
+        }
+
+    raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
 
 
 @app.get("/assess/{job_id}/summary")

@@ -25,10 +25,9 @@ Internal schema (what BRAAnalysisEngine / components expect):
 
 from typing import Dict, Any, List, Tuple
 
-
 def adapt_request(body: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """
-    Parses the full API request body.
+    Parses the full API request body and includes female-specific patient context.
 
     Returns
     -------
@@ -49,12 +48,14 @@ def adapt_request(body: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, 
     # ── Gender: normalise to lowercase ────────────────────────────────────────
     gender = patient_raw.get("gender", "").lower()
 
-    # ── Pregnancy: map isPregnant bool → pregnancy_info dict ─────────────────
-    is_pregnant  = patient_raw.get("isPregnant", False)
+    # ── Female Specific: Pregnancy & Lactation ───────────────────────────────
+    is_pregnant = patient_raw.get("isPregnant", False)
+    is_lactating = patient_raw.get("isLactating", False)
+    
     pregnancy_info = {
         "pregnancy_status": "Ongoing Pregnancy" if is_pregnant else "Not Applicable",
-        "lactation":        "No",
-        "Trimester":        patient_raw.get("trimester"),
+        "lactation": "Yes" if is_lactating else "No",
+        "Trimester": patient_raw.get("trimester"),
     }
 
     # ── ongoingMedications: fill missing indication from chiefComplaint ───────
@@ -69,25 +70,27 @@ def adapt_request(body: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, 
 
     # ── Assemble internal patient_data ────────────────────────────────────────
     patient_data = {
-        "id":                   patient_raw.get("id", ""),
-        "fullName":             patient_raw.get("fullName", ""),
-        "age":                  age,
-        "gender":               gender,
-        "chiefComplaint":       chief_complaint,
-        "pregnancy_info":       pregnancy_info,
-        "currentDiagnosis":     patient_raw.get("currentDiagnosis", []),
-        "pastMedicalConditions": patient_raw.get("pastMedicalConditions", []),
-        "allergies":            patient_raw.get("allergies", []),
-        "ongoingMedications":   ongoing_meds,
+        "id":                     patient_raw.get("id", ""),
+        "fullName":               patient_raw.get("fullName", ""),
+        "age":                    age,
+        "gender":                 gender,
+        "chiefComplaint":         chief_complaint,
+        "pregnancy_info":         pregnancy_info,
+        "is_pregnant":            is_pregnant,        # Direct bool for easy checking
+        "is_lactating":           is_lactating,       # Direct bool for easy checking
+        "trimester":              patient_raw.get("trimester"),
+        "menstrual_history":      patient_raw.get("menstrualHistory"), # Map from Flutter field
+        "currentDiagnosis":       patient_raw.get("currentDiagnosis", []),
+        "pastMedicalConditions":  patient_raw.get("pastMedicalConditions", []),
+        "allergies":              patient_raw.get("allergies", []),
+        "ongoingMedications":     ongoing_meds,
         # Pass through extras for context
-        "mrn":                  patient_raw.get("mrn", ""),
+        "mrn":                    patient_raw.get("mrn", ""),
         "lifestyleSocialHistory": patient_raw.get("lifestyleSocialHistory", ""),
-        "familyHistory":        patient_raw.get("familyHistory", ""),
+        "familyHistory":          patient_raw.get("familyHistory", ""),
     }
 
     # ── newMedications → list of drug_data dicts ──────────────────────────────
-    # condition is inferred from currentDiagnosis names since newMedications
-    # don't carry their own indication in the request body.
     diagnosis_names = [
         dx.get("name", "")
         for dx in patient_raw.get("currentDiagnosis", [])
