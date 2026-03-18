@@ -24,10 +24,30 @@ Internal schema (what BRAAnalysisEngine / components expect):
 """
 
 from typing import Dict, Any, List, Tuple
+import re
+
+
+def _normalize_drug_name(drug_name: str) -> str:
+    """
+    Strips dosage strength and dosage form from a drug name string.
+    Self-contained — no external imports needed.
+    "Diclofenac 50 MG Oral Tablet" → "Diclofenac"
+    "Metformin"                    → "Metformin"  (unchanged)
+    """
+    name = re.sub(r'\d+(\d+)?\s*(mg|ml|g|%|mcg|iu|units?)', '', drug_name, flags=re.IGNORECASE)
+    name = re.sub(
+        r'\b(oral|tablet|capsule|injection|cream|ointment|gel|solution|'
+        r'suspension|patch|spray|inhaler|drop|syrup|powder|suppository|'
+        r'lozenge|vial|film|liquid|foam|extended.release|immediate.release)\b',
+        '', name, flags=re.IGNORECASE
+    )
+    name = re.sub(r'\s+', ' ', name).strip().strip(',').strip()
+    return name or drug_name.strip()
+
 
 def adapt_request(body: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """
-    Parses the full API request body and includes female-specific patient context.
+    Parses the full API request body.
 
     Returns
     -------
@@ -48,14 +68,12 @@ def adapt_request(body: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, 
     # ── Gender: normalise to lowercase ────────────────────────────────────────
     gender = patient_raw.get("gender", "").lower()
 
-    # ── Female Specific: Pregnancy & Lactation ───────────────────────────────
-    is_pregnant = patient_raw.get("isPregnant", False)
-    is_lactating = patient_raw.get("isLactating", False)
-    
+    # ── Pregnancy: map isPregnant bool → pregnancy_info dict ─────────────────
+    is_pregnant  = patient_raw.get("isPregnant", False)
     pregnancy_info = {
         "pregnancy_status": "Ongoing Pregnancy" if is_pregnant else "Not Applicable",
-        "lactation": "Yes" if is_lactating else "No",
-        "Trimester": patient_raw.get("trimester"),
+        "lactation":        "No",
+        "Trimester":        patient_raw.get("trimester"),
     }
 
     # ── ongoingMedications: fill missing indication from chiefComplaint ───────
@@ -70,42 +88,57 @@ def adapt_request(body: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, 
 
     # ── Assemble internal patient_data ────────────────────────────────────────
     patient_data = {
-        "id":                     patient_raw.get("id", ""),
-        "fullName":               patient_raw.get("fullName", ""),
-        "age":                    age,
-        "gender":                 gender,
-        "chiefComplaint":         chief_complaint,
-        "pregnancy_info":         pregnancy_info,
-        "is_pregnant":            is_pregnant,        # Direct bool for easy checking
-        "is_lactating":           is_lactating,       # Direct bool for easy checking
-        "trimester":              patient_raw.get("trimester"),
-        "menstrual_history":      patient_raw.get("menstrualHistory"), # Map from Flutter field
-        "currentDiagnosis":       patient_raw.get("currentDiagnosis", []),
-        "pastMedicalConditions":  patient_raw.get("pastMedicalConditions", []),
-        "allergies":              patient_raw.get("allergies", []),
-        "ongoingMedications":     ongoing_meds,
+        "id":                   patient_raw.get("id", ""),
+        "fullName":             patient_raw.get("fullName", ""),
+        "age":                  age,
+        "gender":               gender,
+        "chiefComplaint":       chief_complaint,
+        "pregnancy_info":       pregnancy_info,
+        "currentDiagnosis":     patient_raw.get("currentDiagnosis", []),
+        "pastMedicalConditions": patient_raw.get("pastMedicalConditions", []),
+        "allergies":            patient_raw.get("allergies", []),
+        "ongoingMedications":   ongoing_meds,
         # Pass through extras for context
-        "mrn":                    patient_raw.get("mrn", ""),
+        "mrn":                  patient_raw.get("mrn", ""),
         "lifestyleSocialHistory": patient_raw.get("lifestyleSocialHistory", ""),
-        "familyHistory":          patient_raw.get("familyHistory", ""),
+        "familyHistory":        patient_raw.get("familyHistory", ""),
     }
 
     # ── newMedications → list of drug_data dicts ──────────────────────────────
+    # condition is inferred from currentDiagnosis names since newMedications
+    # don't carry their own indication in the request body.
     diagnosis_names = [
         dx.get("name", "")
         for dx in patient_raw.get("currentDiagnosis", [])
         if dx.get("name")
     ]
-    inferred_condition = ", ".join(diagnosis_names) if diagnosis_names else chief_complaint
+    # Fallback chain: currentDiagnosis names → chiefComplaint → "General"
+    # An empty condition causes ApprovalStatus and other components to skip
+    # the primary drug entirely, halting the pipeline.
+    inferred_condition = (
+        ", ".join(diagnosis_names)
+        if diagnosis_names
+        else (chief_complaint.strip() or "General")
+    )
 
     new_medications: List[Dict[str, str]] = []
+    seen_meds: set = set()
     for med in body.get("newMedications", []):
-        name = med.get("name", "").strip()
-        if name:
-            new_medications.append({
-                "name":      name,
-                "dosage":    med.get("dosage", ""),
-                "condition": inferred_condition,
-            })
+        raw_name = med.get("name", "").strip()
+        if not raw_name:
+            continue
+        # Strip dosage/form suffix so FDA APIs receive just the active ingredient.
+        # "Diclofenac 50 MG Oral Tablet" -> "Diclofenac"
+        clean_name = _normalize_drug_name(raw_name)
+        # Deduplicate — skip if same clean name already added
+        if clean_name.lower() in seen_meds:
+            continue
+        seen_meds.add(clean_name.lower())
+        new_medications.append({
+            "name":      clean_name,
+            "raw_name":  raw_name,
+            "dosage":    med.get("dosage", ""),
+            "condition": inferred_condition,
+        })
 
     return patient_data, new_medications
