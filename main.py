@@ -133,12 +133,12 @@ def build_engine() -> BRAAnalysisEngine:
         BRAAnalysisEngine(scoring_engine=alt_scoring_engine)
         # Sequential phase
         .add_sequential(ContraindicationComponent())   # R1 — must run first
-        .add_sequential(ApprovalStatusComponent())     # B1
         .add_sequential(MMEComponent())                # B2
         .add_sequential(TherapeuticDuplicationComponent())  # B4
         .add_sequential(ADRComponent())                # R2+R3
         .add_sequential(RMMComponent())                # Step 4
         # Parallel phase
+        .add_parallel(ApprovalStatusComponent())     # B1
         .add_parallel(PubMedComponent())               # B3
         .add_parallel(RiskMitigationComponent())       # R4+R5
         .add_parallel(DiseaseSeverityComponent())      # B6

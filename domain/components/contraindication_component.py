@@ -147,7 +147,7 @@ class ContraindicationComponent(Component):
 
         # 4️⃣  Past condition treatments
         for cond in patient.get("pastMedicalConditions", []):
-            drug      = cond.get("treatmentGiven", "")
+            drug      = cond.get("details", "")
             condition = cond.get("conditionName", "")
             if drug:
                 add(drug, condition, "past_condition")

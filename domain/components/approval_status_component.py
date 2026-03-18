@@ -99,7 +99,7 @@ class ApprovalStatusComponent(Component):
                 add(drug, condition, "current_diagnosis")
         # 4️⃣  Past medical conditions — treatment given for each condition
         for cond in patient.get("pastMedicalConditions", []):
-            drug      = cond.get("treatmentGiven", "")
+            drug      = cond.get("details", "")
             condition = cond.get("conditionName", "")
             if drug:
                 add(drug, condition, "past_condition")
