@@ -43,45 +43,42 @@ class BRAAnalysisEngine:
 
     # ── Execution ────────────────────────────────────────────────────────
 
-    from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+    def execute(self, patient_data: dict, drug_data: dict) -> Optional[ExecutionContext]:
+        context = ExecutionContext(patient_data=patient_data, drug_data=drug_data)
 
-def execute(self, patient_data: dict, drug_data: dict) -> Optional[ExecutionContext]:
-    context = ExecutionContext(patient_data=patient_data, drug_data=drug_data)
+        print("\n══════════════════════════════════════")
+        print("  BRA Analysis Pipeline Starting")
+        print("══════════════════════════════════════")
 
-    print("\n══════════════════════════════════════")
-    print("  BRA Analysis Pipeline Starting")
-    print("══════════════════════════════════════")
+        def run_sequential():
+            print("\n[Phase 1] Sequential Components")
+            return self._sequential_strategy.execute(self._sequential_components, context)
 
-    def run_sequential():
-        print("\n[Phase 1] Sequential Components")
-        return self._sequential_strategy.execute(self._sequential_components, context)
+        def run_parallel():
+            print("\n[Phase 2] Parallel Components")
+            return self._parallel_strategy.execute(self._parallel_components, context)
 
-    def run_parallel():
-        print("\n[Phase 2] Parallel Components")
-        return self._parallel_strategy.execute(self._parallel_components, context)
+        # Run both phases in parallel using 2 threads
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            sequential_future = executor.submit(run_sequential)
+            parallel_future = executor.submit(run_parallel)
 
-    # Run both phases in parallel using 2 threads
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        sequential_future = executor.submit(run_sequential)
-        parallel_future = executor.submit(run_parallel)
+            sequential_success = sequential_future.result()
+            parallel_success = parallel_future.result()
 
-        sequential_success = sequential_future.result()
-        parallel_success = parallel_future.result()
+        # Check results
+        if not sequential_success:
+            print("  Pipeline halted during sequential phase.")
+            return context
 
-    # Check results
-    if not sequential_success:
-        print("  Pipeline halted during sequential phase.")
+        if not parallel_success:
+            print("  Pipeline halted during parallel phase.")
+            return context
+
+        # Scoring only after both are done
+        print("\n[Phase 3] Scoring")
+        context.final_score = self._scoring_engine.evaluate(context)
+        print(f"  Score: {context.final_score}")
+
+        print("\n══════════════════════════════════════\n")
         return context
-
-    if not parallel_success:
-        print("  Pipeline halted during parallel phase.")
-        return context
-
-    # Scoring only after both are done
-    print("\n[Phase 3] Scoring")
-    context.final_score = self._scoring_engine.evaluate(context)
-    print(f"  Score: {context.final_score}")
-
-    print("\n══════════════════════════════════════\n")
-    return context
