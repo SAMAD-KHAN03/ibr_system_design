@@ -165,6 +165,6 @@ class TherapeuticDuplicationComponent(Component):
             if treatment and treatment.lower() not in {
                 "lifestyle", "surgery", "physiotherapy", "none", "diet", "exercise"
             }:
-                add(treatment)
+                add(cond.get("details"))
 
         return names

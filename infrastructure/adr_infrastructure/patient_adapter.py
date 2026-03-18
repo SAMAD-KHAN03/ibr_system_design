@@ -54,8 +54,8 @@ def to_adr_patient_data(patient_data: dict, drug_data: dict) -> Dict[str, Any]:
             prescription.add(dx["medicationName"])
 
     for cond in patient_data.get("pastMedicalConditions", []):
-        if cond.get("treatmentGiven"):
-            prescription.add(cond["treatmentGiven"])
+        if cond.get("details"):
+            prescription.add(cond["details"])
 
     prescription_list = [m for m in prescription if m]
 

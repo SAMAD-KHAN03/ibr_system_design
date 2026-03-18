@@ -74,7 +74,7 @@ class PubMedComponent(Component):
                 add(dx.get("medicationName", ""), dx.get("name", ""), "current_diagnosis")
 
         for cond in patient.get("pastMedicalConditions", []):
-            if cond.get("treatmentGiven"):
-                add(cond.get("treatmentGiven", ""), cond.get("conditionName", ""), "past_condition")
+            if cond.get("details"):
+                add(cond.get("details", ""), cond.get("conditionName", ""), "past_condition")
 
         return pairs
