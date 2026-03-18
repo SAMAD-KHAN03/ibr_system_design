@@ -133,11 +133,11 @@ def build_engine() -> BRAAnalysisEngine:
         BRAAnalysisEngine(scoring_engine=alt_scoring_engine)
         # Sequential phase
         .add_sequential(ContraindicationComponent())   # R1 — must run first
-        .add_sequential(MMEComponent())                # B2
         .add_sequential(TherapeuticDuplicationComponent())  # B4
         .add_sequential(ADRComponent())                # R2+R3
         .add_sequential(RMMComponent())                # Step 4
         # Parallel phase
+        .add_parallel(MMEComponent())                # B2
         .add_parallel(ApprovalStatusComponent())     # B1
         .add_parallel(PubMedComponent())               # B3
         .add_parallel(RiskMitigationComponent())       # R4+R5
@@ -152,12 +152,12 @@ def build_engine() -> BRAAnalysisEngine:
         BRAAnalysisEngine(scoring_engine=scoring_engine)
         # ── Sequential phase ──────────────────────────────────────────────────
         .add_sequential(ContraindicationComponent())   # R1 — halt on primary contraindication
-        .add_sequential(ApprovalStatusComponent())     # B1
-        .add_sequential(MMEComponent())                # B2 — market experience
         .add_sequential(TherapeuticDuplicationComponent())  # B4 — NICE duplication check
         .add_sequential(ADRComponent())                # R2+R3 — must complete before RMM
         .add_sequential(RMMComponent())                # Step 4 — depends on ADRResult
         # ── Parallel phase ────────────────────────────────────────────────────
+        .add_parallel(MMEComponent())                # B2 — market experience
+        .add_parallel(ApprovalStatusComponent())     # B1
         .add_parallel(PubMedComponent())               # B3
         .add_parallel(AlternativesComponent(scoring_engine=alternatives_pipeline))  # B5
         .add_parallel(RiskMitigationComponent())       # R4+R5 — depends on ADRResult
