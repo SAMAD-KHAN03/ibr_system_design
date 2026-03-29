@@ -5,6 +5,7 @@ from core.strategies.sequential_strategy_module import SequentialExecutionStrate
 from core.strategies.parallel_strategy_module import ParallelExecutionStrategy
 from scoring.scoring_engine import ScoringEngine
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 
 class BRAAnalysisEngine:
@@ -44,6 +45,8 @@ class BRAAnalysisEngine:
     # ── Execution ────────────────────────────────────────────────────────
 
     def execute(self, patient_data: dict, drug_data: dict) -> Optional[ExecutionContext]:
+        start_time = time.perf_counter()
+
         context = ExecutionContext(patient_data=patient_data, drug_data=drug_data)
 
         print("\n══════════════════════════════════════")
@@ -81,4 +84,8 @@ class BRAAnalysisEngine:
         print(f"  Score: {context.final_score}")
 
         print("\n══════════════════════════════════════\n")
+        total_time = time.perf_counter() - start_time
+        print("\n══════════════════════════════════════")
+        print(f"  Total execution time: {total_time:.4f} seconds")
+        print("══════════════════════════════════════\n")
         return context

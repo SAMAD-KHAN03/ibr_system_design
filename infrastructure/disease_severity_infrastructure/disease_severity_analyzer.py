@@ -135,7 +135,8 @@ class DiseaseSeverityAnalyzer:
             "Return ONLY valid JSON:\n"
             "{"
             '"disease":"...",'
-            '"classifications":[{"category":"...","timeframe":"...","consequences_if_untreated":"• ...\n• ...","severity":"...","specific_outcomes":["..."],"reliable_sources_used":["..."]}]'
+            '"classifications":[{"category":"...","timeframe":"...","consequences_if_untreated":"• ...\n• ..."'
+            ',"severity":"...","specific_outcomes":["..."],"reliable_sources_used":["..."]}]'
             "}"
         ).replace("{disease}", disease)
 
